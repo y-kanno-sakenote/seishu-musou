@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>もろみ無双（プロトタイプ）</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1410; overflow: hidden; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #1a1410; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+// ============================================================
+// もろみ無双 プロトタイプ
+// 櫂棒で雑菌の大群をなぎ倒す。移動:WASD/矢印 攻撃:Space 無双:X
+// ============================================================
+const cv = document.getElementById('cv');
+const cx = cv.getContext('2d');
+
+let W = 960, H = 640;
+function resize() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.width = W; cv.height = H;
+  cv.style.width = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+}
+resize();
+addEventListener('resize', resize);
+
+const ARENA = { x: W / 2, y: H / 2, r: 285 };
+
+// ---- 入力 ----
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyR' && G.over) reset();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ---- 状態 ----
+const G = {
+  t: 0, over: false, shake: 0,
+  kills: 0, best: +(localStorage.getItem('moromi_best') || 0),
+  combo: 0, comboT: 0,
+  musou: 0, musouMax: 50,
+  player: null, enemies: [], particles: [], waves: [], texts: [],
+  swing: null, spawnT: 0,
+};
+window.G = G; // デバッグ用
+
+function reset() {
+  G.t = 0; G.over = false; G.kills = 0; G.combo = 0; G.comboT = 0;
+  G.musou = 0; G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
+  G.swing = null; G.spawnT = 0; G.shake = 0;
+  G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp: 5, inv: 0, atkCd: 0 };
+  for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
+}
+reset();
+
+// ---- 敵 ----
+function spawnEnemy(elite) {
+  const a = Math.random() * Math.PI * 2;
+  const e = {
+    x: ARENA.x + Math.cos(a) * (ARENA.r - 12),
+    y: ARENA.y + Math.sin(a) * (ARENA.r - 12),
+    kx: 0, ky: 0, wob: Math.random() * 10,
+    elite: !!elite,
+    r: elite ? 22 : 11,
+    hp: elite ? 6 : 1,
+    sp: elite ? 34 : 46 + Math.random() * 26,
+    flash: 0,
+  };
+  G.enemies.push(e);
+}
+
+// ---- 攻撃 ----
+const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
+
+function attack() {
+  const p = G.player;
+  p.atkCd = SWEEP.cd;
+  G.swing = { t: 0, face: p.face };
+  let hit = 0;
+  for (const e of G.enemies) {
+    const dx = e.x - p.x, dy = e.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d > SWEEP.range + e.r) continue;
+    let da = Math.atan2(dy, dx) - p.face;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    if (Math.abs(da) > SWEEP.arc / 2) continue;
+    e.hp--; e.flash = 0.12; hit++;
+    const kb = e.elite ? 90 : 260;
+    e.kx += Math.cos(p.face + da * 0.4) * kb;
+    e.ky += Math.sin(p.face + da * 0.4) * kb;
+  }
+  if (hit) G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
+}
+
+function fireMusou() {
+  G.musou = 0;
+  G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, killed: false });
+  G.shake = 14;
+  addText(G.player.x, G.player.y - 60, '醸しの一撃！', '#ffd76e', 26);
+}
+
+function addText(x, y, str, col, size) {
+  G.texts.push({ x, y, str, col, size: size || 15, t: 0.9 });
+}
+
+function kill(e, i) {
+  G.enemies.splice(i, 1);
+  G.kills++;
+  G.combo++; G.comboT = 1.3;
+  G.musou = Math.min(G.musou + 1, G.musouMax);
+  for (let k = 0; k < (e.elite ? 14 : 6); k++) {
+    const a = Math.random() * Math.PI * 2, v = 40 + Math.random() * 130;
+    G.particles.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.4 + Math.random() * 0.3, elite: e.elite });
+  }
+  if (e.elite) addText(e.x, e.y, '火落菌 撃破！', '#ff9d6e', 18);
+}
+
+// ---- 更新 ----
+function update(dt) {
+  G.t += dt;
+  const p = G.player;
+  if (G.over) return;
+
+  // 移動
+  let mx = 0, my = 0;
+  if (keys.KeyW || keys.ArrowUp) my--;
+  if (keys.KeyS || keys.ArrowDown) my++;
+  if (keys.KeyA || keys.ArrowLeft) mx--;
+  if (keys.KeyD || keys.ArrowRight) mx++;
+  if (mx || my) {
+    const l = Math.hypot(mx, my);
+    p.x += mx / l * 215 * dt;
+    p.y += my / l * 215 * dt;
+    p.face = Math.atan2(my, mx);
+  }
+  // タンク内にクランプ
+  const pd = Math.hypot(p.x - ARENA.x, p.y - ARENA.y);
+  const lim = ARENA.r - 18;
+  if (pd > lim) {
+    p.x = ARENA.x + (p.x - ARENA.x) / pd * lim;
+    p.y = ARENA.y + (p.y - ARENA.y) / pd * lim;
+  }
+
+  // 攻撃
+  p.atkCd -= dt;
+  if (keys.Space && p.atkCd <= 0) attack();
+  if ((keys.KeyX || keys.Enter) && G.musou >= G.musouMax) fireMusou();
+  if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
+  p.inv -= dt;
+
+  // 敵スポーン（時間経過で増える）
+  G.spawnT -= dt;
+  if (G.spawnT <= 0) {
+    const rate = Math.max(0.55 - G.t * 0.012, 0.10);
+    G.spawnT = rate;
+    const n = 1 + Math.floor(G.t / 25);
+    for (let i = 0; i < n; i++) spawnEnemy(Math.random() < 0.04 + G.t * 0.0007);
+  }
+
+  // 敵更新
+  for (let i = G.enemies.length - 1; i >= 0; i--) {
+    const e = G.enemies[i];
+    if (e.hp <= 0) { kill(e, i); continue; }
+    e.flash -= dt;
+    const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1;
+    e.x += (dx / d * e.sp + e.kx) * dt;
+    e.y += (dy / d * e.sp + e.ky) * dt;
+    e.kx *= Math.pow(0.005, dt); e.ky *= Math.pow(0.005, dt);
+    // プレイヤー接触
+    if (d < e.r + 14 && p.inv <= 0) {
+      p.hp--; p.inv = 1.1; G.shake = 10;
+      // 周囲を弾き飛ばして立て直し
+      for (const o of G.enemies) {
+        const ox = o.x - p.x, oy = o.y - p.y, od = Math.hypot(ox, oy) || 1;
+        if (od < 130) { o.kx += ox / od * 320; o.ky += oy / od * 320; }
+      }
+      if (p.hp <= 0) {
+        G.over = true;
+        if (G.kills > G.best) { G.best = G.kills; localStorage.setItem('moromi_best', G.best); }
+      }
+    }
+  }
+
+  // 無双の衝撃波
+  for (let i = G.waves.length - 1; i >= 0; i--) {
+    const w = G.waves[i];
+    w.r += 900 * dt;
+    for (let j = G.enemies.length - 1; j >= 0; j--) {
+      const e = G.enemies[j];
+      if (Math.hypot(e.x - w.x, e.y - w.y) < w.r + e.r) { e.hp = 0; kill(e, j); }
+    }
+    if (w.r > w.max) G.waves.splice(i, 1);
+  }
+
+  // コンボ・演出
+  G.comboT -= dt;
+  if (G.comboT <= 0) G.combo = 0;
+  G.shake = Math.max(G.shake - dt * 30, 0);
+  for (let i = G.particles.length - 1; i >= 0; i--) {
+    const q = G.particles[i];
+    q.t -= dt; q.x += q.vx * dt; q.y += q.vy * dt;
+    q.vx *= 0.92; q.vy *= 0.92;
+    if (q.t <= 0) G.particles.splice(i, 1);
+  }
+  for (let i = G.texts.length - 1; i >= 0; i--) {
+    const t = G.texts[i];
+    t.t -= dt; t.y -= 26 * dt;
+    if (t.t <= 0) G.texts.splice(i, 1);
+  }
+}
+
+// ---- 描画 ----
+function draw() {
+  cx.save();
+  cx.clearRect(0, 0, W, H);
+  if (G.shake > 0) cx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
+
+  // タンク
+  cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r + 14, 0, 7);
+  cx.fillStyle = '#3a2e24'; cx.fill();
+  const grad = cx.createRadialGradient(ARENA.x, ARENA.y - 60, 40, ARENA.x, ARENA.y, ARENA.r);
+  grad.addColorStop(0, '#f2e9d4'); grad.addColorStop(1, '#ddceac');
+  cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r, 0, 7);
+  cx.fillStyle = grad; cx.fill();
+  // もろみの泡
+  cx.fillStyle = 'rgba(255,255,255,0.35)';
+  for (let i = 0; i < 24; i++) {
+    const a = i * 2.62 + G.t * 0.13, rr = (i * 53.7) % ARENA.r * 0.92;
+    cx.beginPath();
+    cx.arc(ARENA.x + Math.cos(a) * rr, ARENA.y + Math.sin(a) * rr, 3 + (i % 4), 0, 7);
+    cx.fill();
+  }
+
+  // 衝撃波
+  for (const w of G.waves) {
+    cx.beginPath(); cx.arc(w.x, w.y, w.r, 0, 7);
+    cx.strokeStyle = 'rgba(255,215,110,' + (1 - w.r / w.max) + ')';
+    cx.lineWidth = 16; cx.stroke();
+  }
+
+  // 敵
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  for (const e of G.enemies) {
+    const wob = Math.sin(G.t * 6 + e.wob) * 2;
+    cx.font = (e.elite ? 44 : 22) + 'px serif';
+    if (e.flash > 0) {
+      cx.save(); cx.filter = 'brightness(3)';
+      cx.fillText(e.elite ? '😈' : '🦠', e.x, e.y + wob);
+      cx.restore();
+    } else {
+      cx.fillText(e.elite ? '😈' : '🦠', e.x, e.y + wob);
+    }
+  }
+
+  // プレイヤー（麹坊や）
+  const p = G.player;
+  if (!(p.inv > 0 && Math.floor(G.t * 14) % 2)) {
+    cx.beginPath(); cx.arc(p.x, p.y, 16, 0, 7);
+    cx.fillStyle = '#fffdf5'; cx.fill();
+    cx.lineWidth = 2.5; cx.strokeStyle = '#8a7a55'; cx.stroke();
+    cx.fillStyle = '#4a3b22'; cx.font = 'bold 15px serif';
+    cx.fillText('麹', p.x, p.y + 1);
+  }
+
+  // 櫂棒スイング
+  if (G.swing) {
+    const pr = G.swing.t / SWEEP.time;
+    const a0 = G.swing.face - SWEEP.arc / 2;
+    const a1 = a0 + SWEEP.arc * pr;
+    cx.beginPath();
+    cx.moveTo(p.x, p.y);
+    cx.arc(p.x, p.y, SWEEP.range, a0, a1);
+    cx.closePath();
+    cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
+    // 棒本体
+    cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
+    cx.beginPath();
+    cx.moveTo(p.x + Math.cos(a1) * 14, p.y + Math.sin(a1) * 14);
+    cx.lineTo(p.x + Math.cos(a1) * (SWEEP.range - 6), p.y + Math.sin(a1) * (SWEEP.range - 6));
+    cx.stroke();
+  }
+
+  // パーティクル
+  for (const q of G.particles) {
+    cx.globalAlpha = Math.max(q.t * 2, 0);
+    cx.fillStyle = q.elite ? '#ff9d6e' : '#b8d98a';
+    cx.beginPath(); cx.arc(q.x, q.y, q.elite ? 4 : 2.5, 0, 7);
+    cx.fill();
+  }
+  cx.globalAlpha = 1;
+
+  // フロートテキスト
+  for (const t of G.texts) {
+    cx.globalAlpha = Math.min(t.t * 2, 1);
+    cx.font = 'bold ' + t.size + 'px serif';
+    cx.fillStyle = t.col;
+    cx.fillText(t.str, t.x, t.y);
+  }
+  cx.globalAlpha = 1;
+  cx.restore();
+
+  // ---- UI ----
+  cx.textAlign = 'left'; cx.textBaseline = 'top';
+  // 純度（残機）
+  cx.font = '26px serif';
+  for (let i = 0; i < 5; i++) {
+    cx.globalAlpha = i < p.hp ? 1 : 0.18;
+    cx.fillText('🍶', 16 + i * 32, 12);
+  }
+  cx.globalAlpha = 1;
+  // 撃破数
+  cx.textAlign = 'right';
+  cx.fillStyle = '#f2e9d4';
+  cx.font = 'bold 34px serif';
+  cx.fillText(G.kills + ' 斬', W - 20, 10);
+  cx.font = '13px serif';
+  cx.fillStyle = '#9a8c72';
+  cx.fillText('最高 ' + G.best, W - 20, 48);
+  // コンボ
+  if (G.combo >= 5) {
+    cx.textAlign = 'center';
+    cx.fillStyle = '#ffd76e';
+    cx.font = 'bold ' + Math.min(22 + G.combo * 0.4, 40) + 'px serif';
+    cx.fillText(G.combo + ' 連斬', W / 2, 14);
+  }
+  // 無双ゲージ（「醸」の文字が満ちる）
+  const mr = G.musou / G.musouMax;
+  cx.textAlign = 'left'; cx.textBaseline = 'bottom';
+  cx.font = 'bold 44px serif';
+  cx.fillStyle = 'rgba(255,215,110,0.18)';
+  cx.fillText('醸', 18, H - 14);
+  if (mr > 0) {
+    cx.save();
+    cx.beginPath(); cx.rect(0, H - 14 - 48 * mr, 90, 48 * mr); cx.clip();
+    cx.fillStyle = mr >= 1 ? '#ffd76e' : '#b8a26e';
+    cx.fillText('醸', 18, H - 14);
+    cx.restore();
+  }
+  if (mr >= 1 && Math.floor(G.t * 3) % 2) {
+    cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
+    cx.fillText('Xで無双！', 74, H - 30);
+  }
+  // 操作説明
+  cx.textAlign = 'center';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+  cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ　X: 醸しの一撃', W / 2, H - 8);
+
+  // ゲームオーバー
+  if (G.over) {
+    cx.fillStyle = 'rgba(20,12,8,0.72)';
+    cx.fillRect(0, 0, W, H);
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.fillStyle = '#f2e9d4';
+    cx.font = 'bold 42px serif';
+    cx.fillText('もろみ、腐造す…', W / 2, H / 2 - 60);
+    cx.font = 'bold 30px serif';
+    cx.fillStyle = '#ffd76e';
+    cx.fillText(G.kills + ' 斬', W / 2, H / 2);
+    cx.font = '17px serif';
+    cx.fillStyle = '#9a8c72';
+    cx.fillText('Rキーでもう一仕込み', W / 2, H / 2 + 52);
+  }
+}
+
+// ---- ループ ----
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
