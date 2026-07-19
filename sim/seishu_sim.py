@@ -26,13 +26,13 @@ class Difficulty(Enum):
 
 
 class Koji(Enum):
-    YELLOW = auto()  # 黄麹: クリティカルダメージ+20%
+    YELLOW = auto()  # 黄麹: クリティカル率+15%（2026-07-19再設計。旧クリダメ+20%は最弱だった）
     WHITE = auto()   # 白麹: クエン酸。被ダメ-20%（敵の動きを鈍らせる）
     BLACK = auto()   # 黒麹: 強クエン酸。敵防御25%無視
 
 
 class Style(Enum):
-    BOX = auto()  # 箱麹: 攻撃範囲1.5倍（巻き込み数+50%）
+    BOX = auto()  # 箱麹: 攻撃範囲1.5倍＋ヒット数で糖化+35%（2026-07-19再設計。旧・範囲のみは罠装備だった）
     LID = auto()  # 麹蓋: 攻撃速度アップ（総ダメージ+20%）
 
 
@@ -117,7 +117,7 @@ class Tuning:
     hiochi_at: float = 0.30      # ボス残HPがこの割合を切ると乱入
     sweep_targets: int = 6       # 一振りの巻き込み数
     crit_rate: float = 0.10
-    crit_dmg: float = 1.5
+    crit_dmg: float = 2.0  # クリ軸底上げ（旧1.5では軸ごと死んでいた）
     max_ticks: int = 120
 
 
@@ -127,6 +127,8 @@ class Result:
     ticks: int
     hp_left: float
     ferments: int
+    death_phase: str = ""   # 敗北時: "boss" / "hiochi" / "timeout"
+    hiochi_ticks: int = 0   # 火落ち菌戦に費やしたtick数
 
 
 def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: random.Random) -> Result:
@@ -135,11 +137,11 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
         atk *= 1.20
     if "SPEED" in rice.main_skill:
         atk *= 1.0 + rice.main_skill["SPEED"]
-    crit_rate = tn.crit_rate + rice.main_skill.get("CRIT_RATE", 0.0)
-    crit_dmg = tn.crit_dmg + (0.20 if weapon.koji == Koji.YELLOW else 0.0)
+    crit_rate = tn.crit_rate + rice.main_skill.get("CRIT_RATE", 0.0) + (0.15 if weapon.koji == Koji.YELLOW else 0.0)
+    crit_dmg = tn.crit_dmg
     sweep = int(tn.sweep_targets * (1.5 if weapon.style == Style.BOX else 1.0))
     yeast_mult = 1.30 if rice.has("YEAST_DAMAGE_UP") else 1.0
-    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0)
+    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0)
     incoming_cut = 0.20 if weapon.koji == Koji.WHITE else 0.0
 
     def vs_def(dmg, df, ignore=False):
@@ -157,6 +159,7 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
     freeze = 0    # 6号: 敵全体行動不能tick
     stun = 0      # 9号: 主目標スタンtick
     ferments = 0
+    hio_start = hio_ticks = 0
 
     for t in range(1, tn.max_ticks + 1):
         # --- プレイヤー攻撃 ---
@@ -202,11 +205,13 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
         if not hiochi_done and hiochi is None and boss <= tn.boss_hp * tn.hiochi_at:
             hiochi = tn.hiochi_hp
             boss = max(boss, 1.0)  # 一撃で閾値を飛び越えても乱入はスキップできない
+            hio_start = t
         if hiochi is not None and hiochi <= 0:
             hiochi = None
             hiochi_done = True  # 殺菌完了。ボスへの攻撃が解禁される
+            hio_ticks = t - hio_start
         if hiochi is None and boss <= 0:
-            return Result(True, t, hp, ferments)
+            return Result(True, t, hp, ferments, "", hio_ticks)
         # 火落ち菌の自己再生（凍結中は再生しない）
         if hiochi is not None and freeze == 0:
             hiochi = min(hiochi + tn.hiochi_regen, tn.hiochi_hp)
@@ -225,12 +230,13 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
             dmg *= 100.0 / (100.0 + rice.defense)
             hp -= dmg
             if hp <= 0:
-                return Result(False, t, 0, ferments)
+                phase = "hiochi" if hiochi is not None else "boss"
+                return Result(False, t, 0, ferments, phase, (t - hio_start) if hiochi is not None else hio_ticks)
 
         # --- 雑菌の湧き ---
         minions = min(minions + rng.randint(2, 4), tn.minion_cap)
 
-    return Result(False, tn.max_ticks, hp, ferments)  # 時間切れ=腐造
+    return Result(False, tn.max_ticks, hp, ferments, "timeout", hio_ticks)  # 時間切れ=腐造
 
 
 # ---------------- 上槽（ドロップ）----------------
@@ -268,19 +274,27 @@ def pct(x):
     return f"{x*100:5.1f}%"
 
 
+# 数値確定候補（2026-07-19。実験1b/1cの結果）
+TUNED_YEASTS = [
+    Yeast("きょうかい6号", cost_glucose=80),   # 全体3秒凍結。コスト割引が持ち味
+    Yeast("きょうかい7号", power=6.0),         # 全体600%（原案500%から増）
+    Yeast("きょうかい9号", power=5.0),         # 単体500%防御無視+スタン（原案1000%から半減）
+]
+
+
 def run_matrix(label: str, tn: Tuning, n: int, rng: random.Random):
     print(f"\n=== {label}（各{n}回 / 勝率・平均tick・平均発酵回数）===")
     print(f"{'酵母':<10}", end="")
     for pol in (70, 50, 35):
         print(f"精米{pol}%              ", end="")
     print()
-    for yname in ("きょうかい6号", "きょうかい7号", "きょうかい9号"):
-        print(f"{yname:<10}", end="")
+    for yeast in TUNED_YEASTS:
+        print(f"{yeast.name:<10}", end="")
         for pol in (70, 50, 35):
             wins = ticks = fers = 0
             for _ in range(n):
                 w = Weapon(polishing_rate=pol)
-                r = simulate_battle(w, Rice(), Yeast(yname), tn, rng)
+                r = simulate_battle(w, Rice(), yeast, tn, rng)
                 wins += r.win
                 ticks += r.ticks
                 fers += r.ferments
@@ -338,7 +352,7 @@ def main():
     ):
         wins = ticks = 0
         for _ in range(1000):
-            r = simulate_battle(Weapon(polishing_rate=50), rice, Yeast("きょうかい7号"), tn, rng)
+            r = simulate_battle(Weapon(polishing_rate=50), rice, TUNED_YEASTS[1], tn, rng)
             wins += r.win
             ticks += r.ticks
         print(f"  {label:<24} 勝率{pct(wins/1000)} 平均{ticks/1000:5.1f}t")
@@ -350,7 +364,7 @@ def main():
             wins = ticks = 0
             for _ in range(1000):
                 w = Weapon(koji=koji, style=style, polishing_rate=50)
-                r = simulate_battle(w, Rice(), Yeast("きょうかい7号"), tn, rng)
+                r = simulate_battle(w, Rice(), TUNED_YEASTS[1], tn, rng)
                 wins += r.win
                 ticks += r.ticks
             print(f"  {koji.name:<7}×{style.name:<4} 勝率{pct(wins/1000)} 平均{ticks/1000:5.1f}t")
