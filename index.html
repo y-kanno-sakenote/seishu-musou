@@ -60,6 +60,8 @@ const WTYPES = {
   daito: { label: '大刀', desc: '標準のなぎ払い', cd: 1, range: 1, arc: 1, dmg: 1 },
   soken: { label: '双剣', desc: '速い小範囲', cd: 0.6, range: 0.75, arc: 1, dmg: 0.75 },
   yari:  { label: '長槍', desc: '直線の長リーチ', cd: 1.1, range: 1.9, arc: 0.35, dmg: 1.3 },
+  otsuchi: { label: '大槌', desc: '遅いが一撃が重い', cd: 1.5, range: 1.1, arc: 1.2, dmg: 1.9 },
+  naginata: { label: '薙刀', desc: '広く薙ぎ払う', cd: 1.15, range: 1.2, arc: 1.4, dmg: 0.95 },
 };
 function wtypeOf(w) { return WTYPES[(w && w.type) || 'daito']; }
 const KOJI = {
@@ -92,6 +94,8 @@ const YEASTS = {
   y7: { name: 'きょうかい7号', short: '7号', cost: 60, desc: '全体アルコール爆発', ult: '大発酵・アルコール爆発', color: '#ffd76e' },
   y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン', ult: '一点突破・酵母の槍', color: '#8ad9c8' },
   y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '3秒凍結・凍結中は櫂入れ+50%', ult: '静寂・もろみ鎮め', color: '#9ad9ff' },
+  y14: { name: 'きょうかい14号', short: '14号', cost: 60, desc: '純度🍶を1回復', ult: '低酸の癒し・金沢の静', color: '#f2c8d8' }, // 金沢酵母＝北陸の寒蔵で会得
+  y18: { name: 'きょうかい1801', short: '1801', cost: 60, desc: '8秒間 攻速+40%・移動+20%', ult: '華やぎ・大吟醸の舞', color: '#f8b878' }, // 鬼仕込みの総本山初制圧で会得
 };
 if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ
 if (!YEASTS[META.yeast]) META.yeast = 'y7';
@@ -115,6 +119,18 @@ function bagPush(bag, item, byRarity) {
 }
 
 // 酒米（防具）まわり
+// 酒米5種：メインスキルは米で固定（産地は実在準拠の叩き台）
+const RICE_MAINS = {
+  '山田錦の魂': '会心15%',
+  '五百万石の魂': '移動+10%',
+  '雄町の魂': '純度上限+1',
+  '美山錦の魂': '糖化+10%',
+  '亀の尾の魂': '発酵ダメ+20%',
+};
+const RICE_NAMES = Object.keys(RICE_MAINS);
+function riceMainIs(name) { return !!(META.rice && META.rice.name === name); }
+function playerMaxHp() { return 5 + (riceMainIs('雄町の魂') ? 1 : 0); }
+
 const RARITY = [
   { label: '並',    color: '#c8bda0', slots: [0, 0] },
   { label: '純米',  color: '#b8d98a', slots: [1, 2] },
@@ -143,14 +159,14 @@ function rollDrop(tier, forcedName) {
   const pool = Object.keys(SUBS);
   const subs = {};
   for (const k of pool.sort(() => Math.random() - 0.5).slice(0, n)) subs[k] = true;
-  // 米武将を浄化した蔵は、その武将の魂が確定で宿る
-  const name = forcedName || (Math.random() < 0.5 ? '山田錦の魂' : '五百万石の魂');
+  // 米武将を浄化した蔵は、その武将の魂が確定で宿る（先鋒は全5種からランダム）
+  const name = forcedName || RICE_NAMES[Math.floor(Math.random() * RICE_NAMES.length)];
   return { name, rarity, subs };
 }
 function riceHas(key) { return !!(META.rice && META.rice.subs && META.rice.subs[key]); }
 function riceText(r) {
   if (!r) return '酒米なし';
-  return RARITY[r.rarity].label + '・' + r.name + Object.keys(r.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('');
+  return RARITY[r.rarity].label + '・' + r.name + '〈' + (RICE_MAINS[r.name] || '') + '〉' + Object.keys(r.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('');
 }
 
 // ---- 効果音（Web Audio合成・ファイルレス。Mキーでミュート）----
@@ -205,18 +221,21 @@ function sfx(type) {
 // 地域区分はかもしてぽん（tank5のPREFECTURES）と同一：北海道/東北/関東/甲信/北陸/東海/近畿/中国/四国/九州
 // gim=風土（地域固有ギミック）。fx: esp=敵速度 spawn=湧き elite=野生酵母率 hioHp=火落ちHP bossHp=米武将HP
 //                                glu=糖化量 cost=発酵コスト wave=発酵波半径 psp=自分の移動速度
+// rice=特産米（米武将と確定ドロップの種類）。産地は実在準拠の叩き台
 const REGIONS10 = [
-  { name: '北海道', weapon: 'daito', gim: { n: '雪原', d: '敵が鈍いが湧きは多い', fx: { esp: 0.9, spawn: 1.1 } } },
-  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' }, gim: { n: '吹雪', d: '寒くて糖化が鈍る（-10%）', fx: { glu: 0.9 } } }, // 寒蔵で6号（新政・秋田）
-  { name: '関東', weapon: 'soken', gim: { n: '喧騒', d: '野生酵母が多い', fx: { elite: 1.3 } } },
-  { name: '甲信', weapon: 'soken', gim: { n: '果香', d: '果実の糖で発酵コスト-10%', fx: { cost: 0.9 } } },
-  { name: '北陸', weapon: 'yari', gim: { n: '淡麗', d: '敵の動きが鋭い', fx: { esp: 1.12 } } },
-  { name: '東海', weapon: 'soken', gim: { n: '濃醇', d: '火落ち菌が硬い', fx: { hioHp: 1.2 } } },
-  { name: '近畿', weapon: 'daito', gim: { n: '男酒', d: '米武将が硬い', fx: { bossHp: 1.2 } } },
-  { name: '中国', weapon: 'yari', gim: { n: '軟水', d: '発酵波が広がる（+15%）', fx: { wave: 1.15 } } },
-  { name: '四国', weapon: 'daito', gim: { n: '急流', d: '足が速くなる（+10%）', fx: { psp: 1.1 } } },
-  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' }, gim: { n: '豪快', d: '雑菌の大群が押し寄せる', fx: { spawn: 1.2 } } }, // 泥蔵で9号（香露・熊本）
+  { name: '北海道', weapon: 'daito', rice: '五百万石の魂', gim: { n: '雪原', d: '敵が鈍いが湧きは多い', fx: { esp: 0.9, spawn: 1.1 } } },
+  { name: '東北', weapon: 'otsuchi', rice: '亀の尾の魂', yeast: { stage: 2, y: 'y6' }, gim: { n: '吹雪', d: '寒くて糖化が鈍る（-10%）', fx: { glu: 0.9 } } }, // 寒蔵で6号（新政・秋田）
+  { name: '関東', weapon: 'soken', rice: '美山錦の魂', gim: { n: '喧騒', d: '野生酵母が多い', fx: { elite: 1.3 } } },
+  { name: '甲信', weapon: 'naginata', rice: '美山錦の魂', gim: { n: '果香', d: '果実の糖で発酵コスト-10%', fx: { cost: 0.9 } } },
+  { name: '北陸', weapon: 'yari', rice: '五百万石の魂', yeast: { stage: 2, y: 'y14' }, gim: { n: '淡麗', d: '敵の動きが鋭い', fx: { esp: 1.12 } } }, // 寒蔵で14号（金沢）
+  { name: '東海', weapon: 'soken', rice: '雄町の魂', gim: { n: '濃醇', d: '火落ち菌が硬い', fx: { hioHp: 1.2 } } },
+  { name: '近畿', weapon: 'daito', rice: '山田錦の魂', gim: { n: '男酒', d: '米武将が硬い', fx: { bossHp: 1.2 } } },
+  { name: '中国', weapon: 'otsuchi', rice: '雄町の魂', gim: { n: '軟水', d: '発酵波が広がる（+15%）', fx: { wave: 1.15 } } },
+  { name: '四国', weapon: 'naginata', rice: '山田錦の魂', gim: { n: '急流', d: '足が速くなる（+10%）', fx: { psp: 1.1 } } },
+  { name: '九州', weapon: 'yari', rice: '山田錦の魂', yeast: { stage: 1, y: 'y9' }, gim: { n: '豪快', d: '雑菌の大群が押し寄せる', fx: { spawn: 1.2 } } }, // 泥蔵で9号（香露・熊本）
 ];
+function regionRice() { return REGIONS10[G.regionIdx].rice; }
+function bossNameFor(node) { return (node.boss ? '大将・' : '') + '洗脳された' + regionRice().replace('の魂', ''); }
 function gimFx() { // 風土の効果（名水仕込みは風土ごと無効化）
   if (riceHas('meisui')) return {};
   return REGIONS10[G.regionIdx].gim.fx;
@@ -232,12 +251,12 @@ const DIFFS = [
   { name: '鬼仕込み', scale: 9, tier: 3, desc: '過酷・大吟醸確定' },
 ];
 // 1地域＝4ステージの固定連戦
-// rice/bossName: その蔵に囚われた米武将。浄化（撃破）すると同種の米が確定ドロップ
+// 泥蔵〜総本山の米武将＝その地域の特産米（regionRice）。先鋒だけボスなし
 const RANKS = [
   [{ name: '先鋒の蔵', desc: '標準の仕込み', mod: {} }],
-  [{ name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦' }],
-  [{ name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石' }],
-  [{ name: '総本山・山田錦の巨大蔵', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true, rice: '山田錦の魂', bossName: '大将・洗脳された山田錦' }],
+  [{ name: '泥蔵', desc: '野生酵母が多い', mod: { elite: 2.5 }, hasBoss: true }],
+  [{ name: '寒蔵', desc: '湧きが激しい', mod: { spawn: 1.35 }, hasBoss: true }],
+  [{ name: '総本山', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true, hasBoss: true }],
 ];
 const GAUGE_ADD = [25, 25, 25, 25]; // 蔵制圧ごとの地域総アルコール上昇
 function kuraLevel() { return DIFFS[G.diff].scale + G.rank + 1; } // 敵スケール＝難易度＋進軍段
@@ -425,6 +444,7 @@ const G = {
   result: null, resultT: 0,
   freezeT: 0, beam: null, // 6号の凍結／9号のビーム演出
   banner: null, flash: null, hitstop: 0, // 必殺技カットイン・画面フラッシュ・ヒットストップ
+  buffT: 0, // 1801「華やぎ」の残り時間
 };
 window.G = G; // デバッグ用
 
@@ -453,10 +473,10 @@ function startKura(node) {
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
   G.freezeT = 0; G.beam = null;
-  G.banner = null; G.flash = null; G.hitstop = 0;
+  G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0;
   G.riceBoss = null; G.riceBossDone = false;
   G.pendingWeapon = null;
-  const hp = G.player ? Math.min(G.player.hp + 1, 5) : 5; // 蔵を越えると一杯回復
+  const hp = G.player ? Math.min(G.player.hp + 1, playerMaxHp()) : playerMaxHp(); // 蔵を越えると一杯回復（雄町は上限6）
   G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp, inv: 0, atkCd: 0 };
   for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
   addText(ARENA.x, ARENA.y - 150, regionName() + '・' + node.name, '#f2e9d4', 30);
@@ -526,7 +546,7 @@ function spawnRiceBoss() {
   G.riceBoss = b;
   G.shake = 14;
   sfx('boss');
-  addText(ARENA.x, ARENA.y - 120, G.node.bossName + 'が立ちはだかる！', '#c9a0ff', 28);
+  addText(ARENA.x, ARENA.y - 120, bossNameFor(G.node) + 'が立ちはだかる！', '#c9a0ff', 28);
   addText(ARENA.x, ARENA.y - 88, '浄化するまで上槽できない！', '#b8a26e', 16);
 }
 
@@ -535,7 +555,7 @@ function addAlcohol(v) {
   const cap = G.hiochi ? 99 : 100; // 乱入中はクリア不可
   G.kuraAlcohol = Math.min(G.kuraAlcohol + v, cap);
   if (G.kuraAlcohol >= 100 && G.mode === 'battle') {
-    if (G.node.bossName && !G.riceBossDone) {
+    if (G.node.hasBoss && !G.riceBossDone) {
       if (!G.riceBoss) spawnRiceBoss(); // 上槽の前に米武将戦
     } else {
       joso();
@@ -549,7 +569,7 @@ const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
 function attack() {
   const p = G.player;
   const wt = wtypeOf(META.weapon); // 武器種：大刀=標準／双剣=速い小範囲／長槍=直線長リーチ
-  p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1); // 麹蓋：攻撃間隔-20%
+  p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
   const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
   const arc = SWEEP.arc * wt.arc;
   G.swing = { t: 0, face: p.face, range, arc };
@@ -574,8 +594,8 @@ function attack() {
   if (hit) {
     sfx('hit');
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
-    // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／糖化の技+10%／風土補正）
-    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
+    // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
+    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
   }
 }
 
@@ -585,7 +605,7 @@ function ferment() {
   G.shake = 14;
   sfx('ferment');
   G.banner = { str: y.ult, color: y.color, t: 1.1 }; // 必殺技カットイン
-  const tMul = riceHas('teion') ? 1.3 : 1;
+  const tMul = (riceHas('teion') ? 1.3 : 1) * (riceMainIs('亀の尾の魂') ? 1.2 : 1); // 低温長期発酵＋亀の尾
   if (META.yeast === 'y7') { // 大発酵・アルコール爆発：三重の爆発輪＋金色フラッシュ
     const wmax = 275 * (gimFx().wave || 1); // 中国・軟水：発酵波が広がる
     G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: wmax });
@@ -622,6 +642,14 @@ function ferment() {
       const a = Math.random() * Math.PI * 2, rr = Math.random() * (ARENA.r - 40);
       addText(ARENA.x + Math.cos(a) * rr, ARENA.y + Math.sin(a) * rr, '❄', '#c8e8ff', 16 + Math.random() * 12);
     }
+  } else if (META.yeast === 'y14') { // 低酸の癒し：純度🍶を1回復
+    G.player.hp = Math.min(G.player.hp + 1, playerMaxHp());
+    G.flash = { rgb: '242,200,216', t: 0.3, max: 0.3 };
+    addText(G.player.x, G.player.y - 60, '🍶 純度回復！', '#f2c8d8', 24);
+  } else if (META.yeast === 'y18') { // 華やぎ・大吟醸の舞：8秒間 攻速+40%・移動+20%
+    G.buffT = 8;
+    G.flash = { rgb: '248,184,120', t: 0.3, max: 0.3 };
+    addText(G.player.x, G.player.y - 60, '舞うように醸せ！', '#f8b878', 24);
   }
 }
 
@@ -667,7 +695,7 @@ function joso() {
   sfx('joso');
   G.regionGauge = Math.min(G.regionGauge + GAUGE_ADD[G.rank], 100);
   // ドロップのレア度tier＝難易度に直結（絞って掘れる）。米武将を浄化した蔵は同種の米が確定
-  const drop = rollDrop(DIFFS[G.diff].tier, G.riceBossDone ? G.node.rice : null);
+  const drop = rollDrop(DIFFS[G.diff].tier, G.riceBossDone ? regionRice() : null);
   // 装備は自動でなくプレイヤーが選ぶ（初回だけ自動装備）
   const cur = META.rice;
   const needChoice = !!cur;
@@ -696,12 +724,17 @@ function joso() {
     if (clearedN >= 6 && !gokuiHas('kai')) { META.gokui.push('kai'); gokuiMsgs.push('回避の技（無敵時間+50%）'); }
   }
   const polished = gokuiMsgs.length ? gokuiMsgs.join('／') : null;
-  // 酵母の会得＝特定の地域・特定の蔵の浄化報酬（東北の寒蔵=6号／九州の泥蔵=9号）
+  // 酵母の会得＝特定の地域・特定の蔵の浄化報酬（東北の寒蔵=6号／北陸の寒蔵=14号／九州の泥蔵=9号）
   let yeastGained = null;
   const ny = nodeYeast(G.rank);
   if (ny && !META.yeasts.includes(ny)) {
     META.yeasts.push(ny);
     yeastGained = ny;
+  }
+  // 1801は鬼仕込みの総本山を初めて落とした証
+  if (!yeastGained && G.node.boss && G.diff === 3 && !META.yeasts.includes('y18')) {
+    META.yeasts.push('y18');
+    yeastGained = 'y18';
   }
   saveMeta();
   G.result = { drop, needChoice, polished, yeastGained, weaponDrop, weaponAuto, weaponChoice, weaponDone: false };
@@ -747,7 +780,7 @@ function update(dt) {
   const p = G.player;
 
   // 移動（五百万石=速度+10%）
-  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1) * (gimFx().psp || 1); // 四国・急流：足が速い
+  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1) * (gimFx().psp || 1) * (G.buffT > 0 ? 1.2 : 1); // 四国・急流／華やぎ
   let mx = 0, my = 0;
   if (keys.KeyW || keys.ArrowUp) my--;
   if (keys.KeyS || keys.ArrowDown) my++;
@@ -794,6 +827,7 @@ function update(dt) {
   if (G.hiochi) G.kuraAlcohol = Math.max(G.kuraAlcohol - 2 * dt, 0);
   G.alarm = Math.max(G.alarm - dt, 0);
   G.freezeT = Math.max(G.freezeT - dt, 0);
+  G.buffT = Math.max(G.buffT - dt, 0);
   if (G.beam) { G.beam.t -= dt; if (G.beam.t <= 0) G.beam = null; }
   if (G.banner) { G.banner.t -= dt; if (G.banner.t <= 0) G.banner = null; }
   if (G.flash) { G.flash.t -= dt; if (G.flash.t <= 0) G.flash = null; }
@@ -848,7 +882,7 @@ function update(dt) {
       if (e.hiochi || e.riceBoss) { // ボス級は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
         if (e.hitBy !== w) {
           e.hitBy = w;
-          e.hp -= Math.round(12 * weaponDmg() * (riceHas('teion') ? 1.3 : 1) * (e.hiochi && riceHas('hiire') ? 1.5 : 1)); // 精米で発酵も伸びる
+          e.hp -= Math.round(12 * weaponDmg() * (riceHas('teion') ? 1.3 : 1) * (riceMainIs('亀の尾の魂') ? 1.2 : 1) * (e.hiochi && riceHas('hiire') ? 1.5 : 1)); // 精米で発酵も伸びる
           e.flash = 0.2;
           if (e.hp <= 0) kill(e, j);
         }
@@ -955,8 +989,15 @@ function draw() {
     }
   }
 
-  // プレイヤー（麹坊や）
+  // プレイヤー（麹坊や）。華やぎ中は金色のオーラ
   const p = G.player;
+  if (G.buffT > 0) {
+    const au = cx.createRadialGradient(p.x, p.y, 6, p.x, p.y, 40);
+    au.addColorStop(0, 'rgba(248,184,120,0.5)');
+    au.addColorStop(1, 'rgba(248,184,120,0)');
+    cx.beginPath(); cx.arc(p.x, p.y, 40, 0, 7);
+    cx.fillStyle = au; cx.fill();
+  }
   if (!(p.inv > 0 && Math.floor(G.t * 14) % 2)) {
     cx.beginPath(); cx.arc(p.x, p.y, 16, 0, 7);
     cx.fillStyle = '#fffdf5'; cx.fill();
@@ -1029,7 +1070,7 @@ function draw() {
   cx.textAlign = 'left'; cx.textBaseline = 'top';
   // 純度（残機）
   cx.font = '26px serif';
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < playerMaxHp(); i++) {
     cx.globalAlpha = i < p.hp ? 1 : 0.18;
     cx.fillText('🍶', 16 + i * 32, 12);
   }
@@ -1386,7 +1427,7 @@ function drawWorld() {
     cx.fillStyle = sel ? '#ffd76e' : '#f2e9d4';
     cx.fillText(rg.name, mx, rc.y + 30);
     cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
-    cx.fillText('特産：' + WTYPES[rg.weapon].label, mx, rc.y + 54);
+    cx.fillText('特産：' + WTYPES[rg.weapon].label + '・' + rg.rice.replace('の魂', ''), mx, rc.y + 54);
     cx.fillStyle = '#b8a26e';
     cx.fillText('風土：' + rg.gim.n, mx, rc.y + 74);
     if (rg.yeast && !META.yeasts.includes(rg.yeast.y)) {
@@ -1452,7 +1493,7 @@ function drawMap() {
   cx.fillText(regionName() + '地方 進軍図〔' + DIFFS[G.diff].name + '〕', W / 2, 60);
   cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
   const gim = REGIONS10[G.regionIdx].gim;
-  cx.fillText('風土：' + gim.n + '（' + gim.d + '）　特産武器：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
+  cx.fillText('風土：' + gim.n + '（' + gim.d + '）　特産：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '・' + regionRice().replace('の魂', '') + '　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
   // 地方の総アルコールゲージ
   cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('地方制圧度（総アルコール）　' + Math.floor(G.regionGauge) + ' / 100', W / 2, 102);
