@@ -46,7 +46,7 @@ const ARENA = { x: W / 2, y: H / 2, r: 285 };
 
 // ---- メタ進行（周回で持ち越す分。localStorage保存）----
 const META_KEY = 'moromi_meta';
-let META = { v: 1, polish: 70, rice: null, weapon: null, bagRice: [], bagWeapons: [], best: 0, bestRegion: 1, mute: false };
+let META = { v: 1, polish: 70, rice: null, weapon: null, bagRice: [], bagWeapons: [], best: 0, regionClear: {}, mute: false };
 try { Object.assign(META, JSON.parse(localStorage.getItem(META_KEY) || '{}')); } catch (e) {}
 function saveMeta() { localStorage.setItem(META_KEY, JSON.stringify(META)); }
 window.META = META; // デバッグ用
@@ -55,7 +55,13 @@ window.META = META; // デバッグ用
 // 精米は武器でなく蔵人の腕（METAで持ち、武器を替えても引き継ぐ）
 function weaponDmg() { return { 70: 10, 50: 14, 35: 17 }[META.polish] || 10; }
 
-// 麹武器（大刀固定・麹×仕込みの組み合わせが個性）。火落ち菌の戦利品
+// 麹武器（武器種×麹×仕込みの組み合わせが個性）。火落ち菌の戦利品（武器種は地域の特産）
+const WTYPES = {
+  daito: { label: '大刀', desc: '標準のなぎ払い', cd: 1, range: 1, arc: 1, dmg: 1 },
+  soken: { label: '双剣', desc: '速い小範囲', cd: 0.6, range: 0.75, arc: 1, dmg: 0.75 },
+  yari:  { label: '長槍', desc: '直線の長リーチ', cd: 1.1, range: 1.9, arc: 0.35, dmg: 1.3 },
+};
+function wtypeOf(w) { return WTYPES[(w && w.type) || 'daito']; }
 const KOJI = {
   yellow: { name: '黄麹', desc: 'クリ率+15%' },
   white:  { name: '白麹', desc: '被弾の20%を弾く' },
@@ -65,15 +71,18 @@ const STYLE = {
   box: { name: '箱麹', desc: '攻撃範囲1.5倍' },
   lid: { name: '麹蓋', desc: '攻撃間隔-20%' },
 };
-function rollWeapon() {
+function rollWeapon(type) {
   const koji = Object.keys(KOJI)[Math.floor(Math.random() * 3)];
   const style = Object.keys(STYLE)[Math.floor(Math.random() * 2)];
-  return { koji, style };
+  return { type: type || 'daito', koji, style };
 }
 function weaponText(w) {
   if (!w) return '素の大刀';
-  return '大刀：' + KOJI[w.koji].name + '×' + STYLE[w.style].name + '［' + KOJI[w.koji].desc + '・' + STYLE[w.style].desc + '］';
+  return wtypeOf(w).label + '：' + KOJI[w.koji].name + '×' + STYLE[w.style].name + '［' + wtypeOf(w).desc + '・' + KOJI[w.koji].desc + '・' + STYLE[w.style].desc + '］';
 }
+// 旧セーブ（武器種なし）の移行
+if (META.weapon && !META.weapon.type) META.weapon.type = 'daito';
+(META.bagWeapons || []).forEach(w => { if (w && !w.type) w.type = 'daito'; });
 function kojiIs(k) { return !!(META.weapon && META.weapon.koji === k); }
 function styleIs(s) { return !!(META.weapon && META.weapon.style === s); }
 
@@ -88,6 +97,7 @@ if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; //
 if (!YEASTS[META.yeast]) META.yeast = 'y7';
 if (!Array.isArray(META.bagRice)) META.bagRice = [];
 if (!Array.isArray(META.bagWeapons)) META.bagWeapons = [];
+if (!META.regionClear || typeof META.regionClear !== 'object') META.regionClear = {};
 const BAG_CAP = 10; // 袋は各10個（叩き台）
 function bagPush(bag, item, byRarity) {
   if (!item) return;
@@ -188,24 +198,43 @@ function sfx(type) {
   else if (type === 'joso') { tone('sine', 523, 523, 0.12, 0.1); tone('sine', 659, 659, 0.12, 0.1, 0.12); tone('sine', 784, 784, 0.24, 0.12, 0.24); }
 }
 
-// ---- 地方と進軍マップ ----
-const REGION_NAMES = ['近畿', '中部', '関東', '東北', '九州', '北海道'];
-function regionName() {
-  const base = REGION_NAMES[(G.regionIdx - 1) % REGION_NAMES.length];
-  return G.regionIdx > REGION_NAMES.length ? base + '·' + Math.ceil(G.regionIdx / REGION_NAMES.length) + '周' : base;
-}
-// 進軍図：rank0=先鋒 → rank1=分岐 → rank2=総本山
+// ---- 10地域・難易度・進軍マップ（2026-07-19 選択制に再構成）----
+// 酵母は実在の系譜でピンポイント配置：6号=東北（新政・秋田）／9号=九州（香露・熊本）
+// 武器種は地域の特産：火落ち菌の戦利品がその地域の武器種で固定
+const REGIONS10 = [
+  { name: '北海道', weapon: 'daito' },
+  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' } }, // 寒蔵で6号
+  { name: '関東', weapon: 'soken' },
+  { name: '北陸', weapon: 'yari' },
+  { name: '中部', weapon: 'soken' },
+  { name: '近畿', weapon: 'daito' },
+  { name: '中国', weapon: 'yari' },
+  { name: '四国', weapon: 'soken' },
+  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' } }, // 泥蔵で9号
+  { name: '沖縄', weapon: 'daito' },
+];
+function regionName() { return REGIONS10[G.regionIdx].name; }
+// 難易度：敵スケールとドロップテーブル（EASY〜NIGHTMARE）が直結
+const DIFFS = [
+  { name: '初仕込み', scale: 0, tier: 0, desc: '敵よわめ・ドロップ並中心' },
+  { name: '本仕込み', scale: 2, tier: 1, desc: '標準・純米中心／精米の技50%' },
+  { name: '寒仕込み', scale: 5, tier: 2, desc: '敵つよめ・吟醸中心／精米の技35%' },
+  { name: '鬼仕込み', scale: 9, tier: 3, desc: '過酷・大吟醸確定' },
+];
+// 1地域＝4ステージの固定連戦
 // rice/bossName: その蔵に囚われた米武将。浄化（撃破）すると同種の米が確定ドロップ
 const RANKS = [
   [{ name: '先鋒の蔵', desc: '標準の仕込み', mod: {} }],
-  [
-    { name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦', yeast: 'y9' },
-    { name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石', yeast: 'y6' },
-  ],
+  [{ name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦' }],
+  [{ name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石' }],
   [{ name: '総本山・山田錦の巨大蔵', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true, rice: '山田錦の魂', bossName: '大将・洗脳された山田錦' }],
 ];
-const GAUGE_ADD = [30, 30, 40]; // 蔵制圧ごとの地方総アルコール上昇
-function kuraLevel() { return (G.regionIdx - 1) * 3 + G.rank + 1; } // 敵スケールの通し番手
+const GAUGE_ADD = [25, 25, 25, 25]; // 蔵制圧ごとの地域総アルコール上昇
+function kuraLevel() { return DIFFS[G.diff].scale + G.rank + 1; } // 敵スケール＝難易度＋進軍段
+function nodeYeast(rank) { // この地域・このステージで会得できる酵母
+  const y = REGIONS10[G.regionIdx].yeast;
+  return y && y.stage === rank ? y.y : null;
+}
 function nodeMod(key) { // 名水仕込み：泥蔵・寒蔵の環境悪化を無効化
   if (riceHas('meisui')) return 1;
   return (G.node && G.node.mod[key]) || 1;
@@ -219,7 +248,22 @@ addEventListener('keydown', e => {
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if (e.code === 'KeyM') { META.mute = !META.mute; saveMeta(); }
   const ok = e.code === 'Space' || e.code === 'Enter';
-  if (G.mode === 'title') { if (ok) G.mode = 'map'; return; }
+  if (G.mode === 'title') { if (ok) G.mode = 'world'; return; }
+  if (G.mode === 'world') {
+    if (['ArrowLeft','KeyA'].includes(e.code)) G.worldSel = (G.worldSel + 9) % 10;
+    if (['ArrowRight','KeyD'].includes(e.code)) G.worldSel = (G.worldSel + 1) % 10;
+    if (['ArrowUp','KeyW','ArrowDown','KeyS'].includes(e.code)) G.worldSel = (G.worldSel + 5) % 10;
+    if (e.code === 'KeyE') { G.mode = 'equip'; G.eqBack = 'world'; G.eqCol = 0; G.eqIdx = 0; return; }
+    if (ok) { G.mode = 'diffsel'; G.diffSel = G.diff; }
+    return;
+  }
+  if (G.mode === 'diffsel') {
+    if (['ArrowUp','KeyW'].includes(e.code)) G.diffSel = (G.diffSel + 3) % 4;
+    if (['ArrowDown','KeyS'].includes(e.code)) G.diffSel = (G.diffSel + 1) % 4;
+    if (e.code === 'Escape' || e.code === 'KeyE') { G.mode = 'world'; return; }
+    if (ok) enterRegion(G.worldSel, G.diffSel);
+    return;
+  }
   if (e.code === 'KeyC' && META.yeasts.length > 1 && G.mode !== 'battle') { // 酵母切替は戦闘外のみ
     META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length];
     saveMeta();
@@ -235,17 +279,17 @@ addEventListener('keydown', e => {
     if (ok) confirmResult();
     return;
   }
-  if (G.mode === 'regionclear') { if (ok && G.clearT > 0.8) nextRegion(); return; }
+  if (G.mode === 'regionclear') { if (ok && G.clearT > 0.8) backToWorld(); return; }
   if (G.mode === 'map') {
     const nodes = RANKS[G.rank];
     if (['ArrowLeft','KeyA','ArrowUp','KeyW'].includes(e.code)) G.selIdx = (G.selIdx + nodes.length - 1) % nodes.length;
     if (['ArrowRight','KeyD','ArrowDown','KeyS'].includes(e.code)) G.selIdx = (G.selIdx + 1) % nodes.length;
-    if (e.code === 'KeyE') { G.mode = 'equip'; G.eqCol = 0; G.eqIdx = 0; return; }
+    if (e.code === 'KeyE') { G.mode = 'equip'; G.eqBack = 'map'; G.eqCol = 0; G.eqIdx = 0; return; }
     if (ok && G.mapT > 0.4) startKura(nodes[G.selIdx]);
     return;
   }
   if (G.mode === 'equip') {
-    if (e.code === 'KeyE' || e.code === 'Escape') { G.mode = 'map'; G.mapT = 0; return; }
+    if (e.code === 'KeyE' || e.code === 'Escape') { G.mode = G.eqBack || 'world'; G.mapT = 0; return; }
     if (['ArrowLeft','KeyA'].includes(e.code)) { G.eqCol = (G.eqCol + 2) % 3; G.eqIdx = 0; }
     if (['ArrowRight','KeyD'].includes(e.code)) { G.eqCol = (G.eqCol + 1) % 3; G.eqIdx = 0; }
     const len = equipCols()[G.eqCol].items.length;
@@ -277,9 +321,11 @@ cv.addEventListener('pointerdown', e => {
   if (e.pointerType !== 'mouse') G.touchUI = true;
   const p = canvasPos(e);
   e.preventDefault();
-  if (G.mode === 'title') { G.mode = 'map'; return; }
+  if (G.mode === 'title') { G.mode = 'world'; return; }
+  if (G.mode === 'world') { worldTap(p); return; }
+  if (G.mode === 'diffsel') { diffTap(p); return; }
   if (G.mode === 'over') { restartRegion(); return; }
-  if (G.mode === 'regionclear') { if (G.clearT > 0.8) nextRegion(); return; }
+  if (G.mode === 'regionclear') { if (G.clearT > 0.8) backToWorld(); return; }
   if (G.mode === 'result') { resultTap(p); return; }
   if (G.mode === 'map') { mapTap(p); return; }
   if (G.mode === 'equip') { equipTap(p); return; }
@@ -307,8 +353,30 @@ function resultTap(p) {
   }
   confirmResult();
 }
+function worldTap(p) {
+  if (inBtn(p, MAP_EQUIP_BTN)) { G.mode = 'equip'; G.eqBack = 'world'; G.eqCol = 0; G.eqIdx = 0; return; }
+  for (let i = 0; i < 10; i++) {
+    const rc = worldCardRect(i);
+    if (p.x > rc.x && p.x < rc.x + rc.w && p.y > rc.y && p.y < rc.y + rc.h) {
+      if (G.worldSel === i) { G.mode = 'diffsel'; G.diffSel = G.diff; } // 選択中の地域をもう一度タップで難易度選択
+      else G.worldSel = i;
+      return;
+    }
+  }
+}
+function diffTap(p) {
+  const inPanel = p.x > DIFF_PANEL.x && p.x < DIFF_PANEL.x + DIFF_PANEL.w && p.y > DIFF_PANEL.y && p.y < DIFF_PANEL.y + DIFF_PANEL.h;
+  if (!inPanel) { G.mode = 'world'; return; } // パネル外タップで戻る
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p.y - diffRowY(i)) < 24) {
+      if (G.diffSel === i) enterRegion(G.worldSel, i); // 選択中の難易度をもう一度タップで進軍
+      else G.diffSel = i;
+      return;
+    }
+  }
+}
 function mapTap(p) {
-  if (inBtn(p, MAP_EQUIP_BTN)) { G.mode = 'equip'; G.eqCol = 0; G.eqIdx = 0; return; }
+  if (inBtn(p, MAP_EQUIP_BTN)) { G.mode = 'equip'; G.eqBack = 'map'; G.eqCol = 0; G.eqIdx = 0; return; }
   const nodes = RANKS[G.rank];
   for (let i = 0; i < nodes.length; i++) {
     const np = nodePos(G.rank, i, nodes.length);
@@ -320,7 +388,7 @@ function mapTap(p) {
   }
 }
 function equipTap(p) {
-  if (inBtn(p, EQUIP_BACK_BTN)) { G.mode = 'map'; G.mapT = 0; return; }
+  if (inBtn(p, EQUIP_BACK_BTN)) { G.mode = G.eqBack || 'world'; G.mapT = 0; return; }
   const ci = p.x < W / 3 ? 0 : p.x < W * 2 / 3 ? 1 : 2;
   const i = Math.round((p.y - 152) / 26);
   const items = equipCols()[ci].items;
@@ -335,8 +403,9 @@ const G = {
   t: 0, mode: 'map', shake: 0, touchUI: false,
   kills: 0, combo: 0, comboT: 0,
   glucose: 0, glucoseMax: 60, // 糖化ゲージ（ヒット1につき+1）
-  regionIdx: 1, rank: 0, regionGauge: 0, node: null, selIdx: 0, mapT: 0, clearT: 0,
-  eqCol: 0, eqIdx: 0, // 装備画面のカーソル
+  regionIdx: 5, diff: 1, rank: 0, regionGauge: 0, node: null, selIdx: 0, mapT: 0, clearT: 0,
+  worldSel: 5, diffSel: 1, // ワールドマップと難易度選択のカーソル
+  eqCol: 0, eqIdx: 0, eqBack: 'world', // 装備画面のカーソルと戻り先
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [],
   swing: null, spawnT: 0,
@@ -351,16 +420,20 @@ window.G = G; // デバッグ用
 
 function newRun() {
   G.t = 0;
-  G.regionIdx = 1;
-  restartRegion();
+  G.mode = 'world';
 }
 
-function restartRegion() { // 腐造しても装備は残る。同じ地方の先鋒からやり直し
+function enterRegion(idx, diff) { // 地域に入る＝1ランの開始
+  G.regionIdx = idx; G.diff = diff;
   G.kills = 0; G.combo = 0; G.comboT = 0;
   G.glucose = 0; G.shake = 0;
   G.rank = 0; G.regionGauge = 0; G.node = null; G.selIdx = 0; G.mapT = 0;
   G.player = null; // 仕込み直しは満タンで始める（蔵越えの+1回復と区別）
   G.mode = 'map';
+}
+
+function restartRegion() { // 腐造しても装備は残る。同じ地域・同じ難易度の先鋒からやり直し
+  enterRegion(G.regionIdx, G.diff);
 }
 
 function startKura(node) {
@@ -465,20 +538,22 @@ const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
 
 function attack() {
   const p = G.player;
-  p.atkCd = SWEEP.cd * (styleIs('lid') ? 0.8 : 1); // 麹蓋：攻撃間隔-20%
-  const range = SWEEP.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
-  G.swing = { t: 0, face: p.face, range };
+  const wt = wtypeOf(META.weapon); // 武器種：大刀=標準／双剣=速い小範囲／長槍=直線長リーチ
+  p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1); // 麹蓋：攻撃間隔-20%
+  const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
+  const arc = SWEEP.arc * wt.arc;
+  G.swing = { t: 0, face: p.face, range, arc };
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
-  const dmg = weaponDmg() * (crit ? 2 : 1);
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1);
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
     if (d > range + e.r) continue;
     let da = Math.atan2(dy, dx) - p.face;
     da = Math.atan2(Math.sin(da), Math.cos(da));
-    if (Math.abs(da) > SWEEP.arc / 2) continue;
+    if (Math.abs(da) > arc / 2) continue;
     // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
     e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
@@ -564,8 +639,8 @@ function kill(e, i) {
     G.shake = 14;
     addText(e.x, e.y, '殺菌完了！', '#ffd76e', 30);
     // 戦利品：麹武器（上槽のときに装備を選ぶ）
-    G.pendingWeapon = rollWeapon();
-    addText(e.x, e.y + 34, '戦利品：' + KOJI[G.pendingWeapon.koji].name + '×' + STYLE[G.pendingWeapon.style].name + 'の大刀！', '#b8d98a', 17);
+    G.pendingWeapon = rollWeapon(REGIONS10[G.regionIdx].weapon); // 武器種は地域の特産
+    addText(e.x, e.y + 34, '戦利品：' + KOJI[G.pendingWeapon.koji].name + '×' + STYLE[G.pendingWeapon.style].name + 'の' + wtypeOf(G.pendingWeapon).label + '！', '#b8d98a', 17);
     addAlcohol(8);
   } else if (e.elite) {
     addText(e.x, e.y, '野生酵母 撃破！', '#ff9d6e', 18);
@@ -580,8 +655,8 @@ function joso() {
   G.mode = 'result'; G.resultT = 0;
   sfx('joso');
   G.regionGauge = Math.min(G.regionGauge + GAUGE_ADD[G.rank], 100);
-  // ドロップのレア度tier：進軍の深さ＋地方の番手で良くなる。米武将を浄化した蔵は同種の米が確定
-  const drop = rollDrop(G.rank + G.regionIdx - 1, G.riceBossDone ? G.node.rice : null);
+  // ドロップのレア度tier＝難易度に直結（絞って掘れる）。米武将を浄化した蔵は同種の米が確定
+  const drop = rollDrop(DIFFS[G.diff].tier, G.riceBossDone ? G.node.rice : null);
   // 装備は自動でなくプレイヤーが選ぶ（初回だけ自動装備）
   const cur = META.rice;
   const needChoice = !!cur;
@@ -595,19 +670,22 @@ function joso() {
     if (!META.weapon) { META.weapon = weaponDrop; weaponAuto = true; }
     else { weaponChoice = true; G.wchoice = 0; }
   }
-  // 精米イベント：地方1・地方2の総本山制圧で研ぎが進む
-  // 地方制圧の特典＝杜氏の極意（技能系）。精米の技はその第一
+  // 地域制圧の特典＝杜氏の極意（技能系）。精米の技は難易度に紐付く（本仕込み以上→50%、寒仕込み以上→35%）
   let polished = null;
   if (G.node.boss) {
-    if (G.regionIdx === 1 && META.polish === 70) { META.polish = 50; polished = '精米の技　70%→50%（攻撃力+40%）'; }
-    if (G.regionIdx === 2 && META.polish === 50) { META.polish = 35; polished = '精米の技　50%→35%（攻撃力+70%）'; }
-    META.bestRegion = Math.max(META.bestRegion, G.regionIdx + 1);
+    if (G.diff >= 1 && META.polish === 70) { META.polish = 50; polished = '精米の技　70%→50%（攻撃力+40%）'; }
+    else if (G.diff >= 2 && META.polish === 50) { META.polish = 35; polished = '精米の技　50%→35%（攻撃力+70%）'; }
+    if (!META.regionClear) META.regionClear = {};
+    const rn = regionName();
+    META.regionClear[rn] = Math.max(META.regionClear[rn] ?? -1, G.diff);
+    if (G.kills > META.best) META.best = G.kills;
   }
-  // 酵母の会得＝特定の蔵の浄化報酬（泥蔵=9号／寒蔵=6号）
+  // 酵母の会得＝特定の地域・特定の蔵の浄化報酬（東北の寒蔵=6号／九州の泥蔵=9号）
   let yeastGained = null;
-  if (G.node.yeast && !META.yeasts.includes(G.node.yeast)) {
-    META.yeasts.push(G.node.yeast);
-    yeastGained = G.node.yeast;
+  const ny = nodeYeast(G.rank);
+  if (ny && !META.yeasts.includes(ny)) {
+    META.yeasts.push(ny);
+    yeastGained = ny;
   }
   saveMeta();
   G.result = { drop, needChoice, polished, yeastGained, weaponDrop, weaponAuto, weaponChoice, weaponDone: false };
@@ -638,10 +716,9 @@ function afterResult() { // 上槽リザルトを閉じたあとの行き先
   else { G.rank++; G.selIdx = 0; G.mapT = 0; G.mode = 'map'; }
 }
 
-function nextRegion() {
-  G.regionIdx++;
-  G.rank = 0; G.regionGauge = 0; G.selIdx = 0; G.mapT = 0;
-  G.mode = 'map';
+function backToWorld() { // 地域制圧のあとはワールドマップへ帰還
+  G.worldSel = G.regionIdx;
+  G.mode = 'world';
 }
 
 // ---- 更新 ----
@@ -784,6 +861,8 @@ function update(dt) {
 // ---- 描画 ----
 function draw() {
   if (G.mode === 'title') { drawTitle(); return; }
+  if (G.mode === 'world') { drawWorld(); return; }
+  if (G.mode === 'diffsel') { drawWorld(); drawDiffsel(); return; }
   if (G.mode === 'equip') { drawEquip(); return; }
   if (G.mode === 'map') { drawMap(); return; }
   if (G.mode === 'regionclear') { drawRegionClear(); return; }
@@ -873,8 +952,9 @@ function draw() {
   // 櫂棒スイング
   if (G.swing) {
     const pr = G.swing.t / SWEEP.time;
-    const a0 = G.swing.face - SWEEP.arc / 2;
-    const a1 = a0 + SWEEP.arc * pr;
+    const sa = G.swing.arc || SWEEP.arc;
+    const a0 = G.swing.face - sa / 2;
+    const a1 = a0 + sa * pr;
     const sr = G.swing.range || SWEEP.range;
     cx.beginPath();
     cx.moveTo(p.x, p.y);
@@ -945,7 +1025,7 @@ function draw() {
   cx.fillText(G.kills + ' 斬', W - 20, 10);
   cx.font = '13px serif';
   cx.fillStyle = '#9a8c72';
-  cx.fillText('最高 ' + META.best + ' 斬 ／ 最深 第' + META.bestRegion + '地方', W - 20, 48);
+  cx.fillText('最高 ' + META.best + ' 斬 ／ 制圧 ' + Object.keys(META.regionClear || {}).length + '/10地域', W - 20, 48);
   // 装備（右下パネル。タッチ時はボタンと被るので出さない）
   if (!G.touchUI) drawEquipUI(false);
   // コンボ
@@ -959,7 +1039,7 @@ function draw() {
   cx.textAlign = 'center'; cx.textBaseline = 'top';
   cx.font = 'bold 15px serif';
   cx.fillStyle = G.hiochi ? '#ff5a4a' : '#f2e9d4';
-  cx.fillText(regionName() + '・' + G.node.name + '　発酵度 ' + Math.floor(G.kuraAlcohol) + '%', W / 2, 54);
+  cx.fillText(regionName() + '〔' + DIFFS[G.diff].name + '〕・' + G.node.name + '　発酵度 ' + Math.floor(G.kuraAlcohol) + '%', W / 2, 54);
   cx.fillStyle = 'rgba(20,10,8,0.5)';
   cx.fillRect(W / 2 - 110, 76, 220, 7);
   cx.fillStyle = G.hiochi ? '#ff5a4a' : '#b8a26e';
@@ -1020,7 +1100,7 @@ function draw() {
       cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
       cx.fillText('火落ち菌の戦利品', W / 2, H / 2 - 72);
       cx.font = 'bold 26px serif'; cx.fillStyle = '#b8d98a';
-      cx.fillText(KOJI[wd.koji].name + '×' + STYLE[wd.style].name + ' の大刀', W / 2, H / 2 - 40);
+      cx.fillText(KOJI[wd.koji].name + '×' + STYLE[wd.style].name + ' の' + wtypeOf(wd).label, W / 2, H / 2 - 40);
       cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
       cx.fillText(KOJI[wd.koji].desc + '　' + STYLE[wd.style].desc, W / 2, H / 2 - 4);
       cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
@@ -1157,7 +1237,7 @@ function equipSelect() {
 }
 function itemLabel(it) {
   if ('y' in it) return YEASTS[it.y].name;
-  if ('w' in it) return it.w ? KOJI[it.w.koji].name + '×' + STYLE[it.w.style].name : '素の大刀';
+  if ('w' in it) return it.w ? wtypeOf(it.w).label + '・' + KOJI[it.w.koji].name + '×' + STYLE[it.w.style].name : '素の大刀';
   return it.r ? RARITY[it.r.rarity].label + '・' + it.r.name : '酒米なし';
 }
 function itemDetail(it) {
@@ -1243,9 +1323,10 @@ function drawTitle() {
   // 世界観と記録
   cx.font = '15px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, H - 150);
-  if (META.best > 0 || META.bestRegion > 1) {
+  const clearedN = Object.keys(META.regionClear || {}).length;
+  if (META.best > 0 || clearedN > 0) {
     cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
-    cx.fillText('最高 ' + META.best + ' 斬 ／ 最深 第' + META.bestRegion + '地方　（装備と極意は持ち越し）', W / 2, H - 126);
+    cx.fillText('最高 ' + META.best + ' 斬 ／ 制圧 ' + clearedN + '/10地域　（装備と極意は持ち越し）', W / 2, H - 126);
   }
   if (innerHeight > innerWidth) { // 縦持ちのスマホには横持ちを勧める
     cx.font = 'bold 17px serif'; cx.fillStyle = '#ffd76e';
@@ -1260,19 +1341,99 @@ function drawTitle() {
   cx.fillText('WASD/矢印: 移動　Space: 櫂入れ　X: 必殺（装備中の酵母で技が変わる）　E: 装備　R: 再仕込み　M: 音　※スマホはタッチ操作', W / 2, H - 40);
 }
 
+// ---- ワールドマップ（10地域選択）----
+function worldCardRect(i) {
+  const col = i % 5, row = Math.floor(i / 5);
+  return { x: 35 + col * 180, y: row === 0 ? 128 : 292, w: 170, h: 140 };
+}
+
+function drawWorld() {
+  cx.fillStyle = '#241c14'; cx.fillRect(0, 0, W, H);
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px serif';
+  cx.fillText('ワールドマップ ― どの地域を醸すか ―', W / 2, 56);
+  cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
+  cx.fillText('雑菌に冒された全国の蔵々を、麹坊やが浄化して回る', W / 2, 86);
+  for (let i = 0; i < 10; i++) {
+    const rg = REGIONS10[i], rc = worldCardRect(i);
+    const sel = i === G.worldSel;
+    const clearedD = (META.regionClear || {})[rg.name];
+    cx.fillStyle = sel ? '#4a3b28' : '#2c241a';
+    cx.beginPath();
+    if (cx.roundRect) cx.roundRect(rc.x, rc.y, rc.w, rc.h, 10); else cx.rect(rc.x, rc.y, rc.w, rc.h);
+    cx.fill();
+    cx.lineWidth = sel ? 4 : 2;
+    cx.strokeStyle = sel ? '#ffd76e' : clearedD !== undefined ? '#b8d98a' : '#6a5c48';
+    cx.stroke();
+    const mx = rc.x + rc.w / 2;
+    cx.font = 'bold 20px serif';
+    cx.fillStyle = sel ? '#ffd76e' : '#f2e9d4';
+    cx.fillText(rg.name, mx, rc.y + 30);
+    cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
+    cx.fillText('特産：' + WTYPES[rg.weapon].label, mx, rc.y + 58);
+    if (rg.yeast && !META.yeasts.includes(rg.yeast.y)) {
+      cx.fillStyle = '#8ad9c8';
+      cx.fillText('酵母（' + YEASTS[rg.yeast.y].short + '）の気配', mx, rc.y + 80);
+    }
+    cx.font = '12px serif';
+    if (clearedD !== undefined) {
+      cx.fillStyle = clearedD >= 3 ? '#ffd76e' : '#b8d98a';
+      cx.fillText('制圧：' + DIFFS[clearedD].name, mx, rc.y + 116);
+    } else {
+      cx.fillStyle = '#6a5c48';
+      cx.fillText('未制圧', mx, rc.y + 116);
+    }
+  }
+  drawEquipUI(true);
+  cx.textAlign = 'center'; cx.textBaseline = 'bottom';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+  cx.fillText('←→↑↓で地域を選択　Spaceで難易度選択　E: 装備', W / 2, H - 8);
+}
+
+// ---- 難易度選択 ----
+const DIFF_PANEL = { x: W / 2 - 260, y: 130, w: 520, h: 350 };
+function diffRowY(i) { return DIFF_PANEL.y + 92 + i * 56; }
+
+function drawDiffsel() {
+  cx.fillStyle = 'rgba(10,6,4,0.7)'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#2c241a';
+  cx.beginPath();
+  if (cx.roundRect) cx.roundRect(DIFF_PANEL.x, DIFF_PANEL.y, DIFF_PANEL.w, DIFF_PANEL.h, 12); else cx.rect(DIFF_PANEL.x, DIFF_PANEL.y, DIFF_PANEL.w, DIFF_PANEL.h);
+  cx.fill();
+  cx.lineWidth = 2; cx.strokeStyle = '#8a7a55'; cx.stroke();
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.font = 'bold 24px serif'; cx.fillStyle = '#f2e9d4';
+  cx.fillText(REGIONS10[G.worldSel].name + '地方 ― 仕込みの厳しさを選ぶ', W / 2, DIFF_PANEL.y + 40);
+  const clearedD = (META.regionClear || {})[REGIONS10[G.worldSel].name];
+  for (let i = 0; i < 4; i++) {
+    const sel = i === G.diffSel;
+    const y = diffRowY(i);
+    cx.font = (sel ? 'bold ' : '') + '19px serif';
+    cx.fillStyle = sel ? '#ffd76e' : '#c8bda0';
+    const mark = clearedD !== undefined && clearedD >= i ? '🍶' : '　';
+    cx.fillText((sel ? '▶ ' : '　 ') + DIFFS[i].name + ' ' + mark, W / 2 - 120, y);
+    cx.font = '13px serif'; cx.fillStyle = sel ? '#c8bda0' : '#8a7c62';
+    cx.textAlign = 'left';
+    cx.fillText(DIFFS[i].desc, W / 2 - 40, y);
+    cx.textAlign = 'center';
+  }
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+  cx.fillText('↑↓で選択　Spaceで進軍　E/Escで戻る', W / 2, DIFF_PANEL.y + DIFF_PANEL.h - 22);
+}
+
 // ---- 進軍マップ描画 ----
-function nodePos(r, i, count) {
-  const xs = [W / 2 - 270, W / 2, W / 2 + 270];
-  return { x: xs[r], y: H / 2 + 40 + (count === 1 ? 0 : (i === 0 ? -85 : 85)) };
+function nodePos(r, i, count) { // 4ステージ横並び
+  const xs = [W / 2 - 330, W / 2 - 110, W / 2 + 110, W / 2 + 330];
+  return { x: xs[r], y: H / 2 + 40 };
 }
 
 function drawMap() {
   cx.fillStyle = '#241c14'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
   cx.fillStyle = '#f2e9d4'; cx.font = 'bold 32px serif';
-  cx.fillText(regionName() + '地方 進軍図', W / 2, 60);
+  cx.fillText(regionName() + '地方 進軍図〔' + DIFFS[G.diff].name + '〕', W / 2, 60);
   cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
-  cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, 86);
+  cx.fillText('特産武器：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '（火落ち菌の戦利品）　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
   // 地方の総アルコールゲージ
   cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('地方制圧度（総アルコール）　' + Math.floor(G.regionGauge) + ' / 100', W / 2, 102);
@@ -1302,12 +1463,13 @@ function drawMap() {
       cx.fillText(cleared ? '🍶' : nd.boss ? '🏯' : '🏚', p.x, p.y + 1);
       cx.font = 'bold 15px serif';
       cx.fillStyle = sel ? '#ffd76e' : cleared ? '#8a9c72' : '#c8bda0';
-      cx.fillText(nd.name, p.x, p.y + (nd.boss ? 62 : 54));
+      cx.fillText(nd.boss ? '総本山' : nd.name, p.x, p.y + (nd.boss ? 62 : 54));
       cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
       cx.fillText(cleared ? '制圧済み' : nd.desc, p.x, p.y + (nd.boss ? 80 : 72));
-      if (!cleared && nd.yeast && !META.yeasts.includes(nd.yeast)) {
+      const ny = nodeYeast(r);
+      if (!cleared && ny && !META.yeasts.includes(ny)) {
         cx.fillStyle = '#8ad9c8';
-        cx.fillText('未会得の酵母（' + YEASTS[nd.yeast].short + '）の気配', p.x, p.y + 88);
+        cx.fillText('未会得の酵母（' + YEASTS[ny].short + '）の気配', p.x, p.y + 88);
       }
     }
   // 麹坊や（現在の進軍先の上でぴょこぴょこ）
@@ -1346,7 +1508,7 @@ function drawRegionClear() {
   cx.fillText('次の地方は敵が強くなり、酒米のドロップも上等になる', W / 2, H / 2 + 30);
   if (G.clearT > 0.8 && Math.floor(G.t * 2) % 2 === 0) {
     cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
-    cx.fillText('Space で ' + REGION_NAMES[G.regionIdx % REGION_NAMES.length] + '地方へ進軍', W / 2, H / 2 + 84);
+    cx.fillText('Space でワールドマップへ帰還', W / 2, H / 2 + 84);
   }
 }
 
