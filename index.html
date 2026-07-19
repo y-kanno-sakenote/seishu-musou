@@ -39,13 +39,36 @@ const ARENA = { x: W / 2, y: H / 2, r: 285 };
 
 // ---- メタ進行（周回で持ち越す分。localStorage保存）----
 const META_KEY = 'moromi_meta';
-let META = { polish: 70, rice: null, best: 0, bestRegion: 1 };
+let META = { polish: 70, rice: null, weapon: null, best: 0, bestRegion: 1 };
 try { Object.assign(META, JSON.parse(localStorage.getItem(META_KEY) || '{}')); } catch (e) {}
 function saveMeta() { localStorage.setItem(META_KEY, JSON.stringify(META)); }
 window.META = META; // デバッグ用
 
 // 精米歩合→櫂入れダメージ（数値層の攻撃力100/140/170を1/10スケールで移植）
+// 精米は武器でなく蔵人の腕（METAで持ち、武器を替えても引き継ぐ）
 function weaponDmg() { return { 70: 10, 50: 14, 35: 17 }[META.polish] || 10; }
+
+// 麹武器（大刀固定・麹×仕込みの組み合わせが個性）。火落ち菌の戦利品
+const KOJI = {
+  yellow: { name: '黄麹', desc: 'クリ率+15%' },
+  white:  { name: '白麹', desc: '被弾の20%を弾く' },
+  black:  { name: '黒麹', desc: 'ボス級ダメ+25%' },
+};
+const STYLE = {
+  box: { name: '箱麹', desc: '攻撃範囲1.5倍' },
+  lid: { name: '麹蓋', desc: '攻撃間隔-20%' },
+};
+function rollWeapon() {
+  const koji = Object.keys(KOJI)[Math.floor(Math.random() * 3)];
+  const style = Object.keys(STYLE)[Math.floor(Math.random() * 2)];
+  return { koji, style };
+}
+function weaponText(w) {
+  if (!w) return '素の大刀';
+  return '大刀：' + KOJI[w.koji].name + '×' + STYLE[w.style].name + '［' + KOJI[w.koji].desc + '・' + STYLE[w.style].desc + '］';
+}
+function kojiIs(k) { return !!(META.weapon && META.weapon.koji === k); }
+function styleIs(s) { return !!(META.weapon && META.weapon.style === s); }
 
 // 酵母（発酵技）。数値層の確定値をゲージ60スケールで移植（コスト100/100/80→60/60/48）
 const YEASTS = {
@@ -130,9 +153,20 @@ addEventListener('keydown', e => {
   }
   if (G.mode === 'over') { if (e.code === 'KeyR') restartRegion(); return; }
   if (G.mode === 'result') {
-    if (G.result && G.result.needChoice && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) G.choice = 1 - G.choice;
+    const r = G.result;
+    const arrow = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code);
+    if (r && r.weaponChoice && !r.weaponDone) { // 先に武器（麹）の選択ページ
+      if (arrow) G.wchoice = 1 - G.wchoice;
+      if (ok && G.resultT > 0.6) {
+        if (G.wchoice === 0) { META.weapon = r.weaponDrop; saveMeta(); }
+        r.weaponDone = true;
+        G.resultT = 0.3; // 押しっぱなしで米ページまで飛ばない程度の間
+      }
+      return;
+    }
+    if (r && r.needChoice && arrow) G.choice = 1 - G.choice;
     if (ok && G.resultT > 0.6) {
-      if (G.result && G.result.needChoice && G.choice === 0) { META.rice = G.result.drop; saveMeta(); }
+      if (r && r.needChoice && G.choice === 0) { META.rice = r.drop; saveMeta(); }
       afterResult();
     }
     return;
@@ -159,6 +193,7 @@ const G = {
   swing: null, spawnT: 0,
   hiochi: null, alarm: 0,
   riceBoss: null, riceBossDone: false, // 洗脳された米武将（浄化するまで上槽できない）
+  pendingWeapon: null, wchoice: 0, // 火落ち菌の戦利品（麹武器）と上槽での選択
   result: null, resultT: 0,
   freezeT: 0, beam: null, newYeast: null, // 6号の凍結／9号のビーム演出／会得告知
 };
@@ -186,6 +221,7 @@ function startKura(node) {
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
   G.freezeT = 0; G.beam = null;
   G.riceBoss = null; G.riceBossDone = false;
+  G.pendingWeapon = null;
   const hp = G.player ? Math.min(G.player.hp + 1, 5) : 5; // 蔵を越えると一杯回復
   G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp, inv: 0, atkCd: 0 };
   for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
@@ -275,19 +311,21 @@ const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
 
 function attack() {
   const p = G.player;
-  p.atkCd = SWEEP.cd;
-  G.swing = { t: 0, face: p.face };
+  p.atkCd = SWEEP.cd * (styleIs('lid') ? 0.8 : 1); // 麹蓋：攻撃間隔-20%
+  const range = SWEEP.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
+  G.swing = { t: 0, face: p.face, range };
   let hit = 0;
-  const crit = META.rice && META.rice.name === '山田錦の魂' && Math.random() < 0.15; // 山田錦=会心15%
+  const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
+  const crit = Math.random() < critRate;
   const dmg = weaponDmg() * (crit ? 2 : 1);
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
-    if (d > SWEEP.range + e.r) continue;
+    if (d > range + e.r) continue;
     let da = Math.atan2(dy, dx) - p.face;
     da = Math.atan2(Math.sin(da), Math.cos(da));
     if (Math.abs(da) > SWEEP.arc / 2) continue;
-    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1); e.flash = 0.12; hit++;
+    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const kb = (e.hiochi || e.riceBoss) ? 30 : e.elite ? 90 : 260;
     e.kx += Math.cos(p.face + da * 0.4) * kb;
@@ -352,6 +390,9 @@ function kill(e, i) {
     G.hiochiDone = true;
     G.shake = 14;
     addText(e.x, e.y, '殺菌完了！', '#ffd76e', 30);
+    // 戦利品：麹武器（上槽のときに装備を選ぶ）
+    G.pendingWeapon = rollWeapon();
+    addText(e.x, e.y + 34, '戦利品：' + KOJI[G.pendingWeapon.koji].name + '×' + STYLE[G.pendingWeapon.style].name + 'の大刀！', '#b8d98a', 17);
     addAlcohol(8);
   } else if (e.elite) {
     addText(e.x, e.y, '野生酵母 撃破！', '#ff9d6e', 18);
@@ -372,6 +413,14 @@ function joso() {
   const needChoice = !!cur;
   if (!cur) META.rice = drop;
   G.choice = needChoice && drop.rarity > cur.rarity ? 0 : 1; // レア度が上なら「着る」を初期選択
+  // 火落ち菌の戦利品（麹武器）：初めての麹は自動装備、以降は選択
+  const weaponDrop = G.pendingWeapon;
+  G.pendingWeapon = null;
+  let weaponAuto = false, weaponChoice = false;
+  if (weaponDrop) {
+    if (!META.weapon) { META.weapon = weaponDrop; weaponAuto = true; }
+    else { weaponChoice = true; G.wchoice = 0; }
+  }
   // 精米イベント：地方1・地方2の総本山制圧で研ぎが進む
   let polished = null;
   G.newYeast = null;
@@ -384,7 +433,7 @@ function joso() {
     META.bestRegion = Math.max(META.bestRegion, G.regionIdx + 1);
   }
   saveMeta();
-  G.result = { drop, needChoice, polished };
+  G.result = { drop, needChoice, polished, weaponDrop, weaponAuto, weaponChoice, weaponDone: false };
 }
 
 function afterResult() { // 上槽リザルトを閉じたあとの行き先
@@ -468,8 +517,14 @@ function update(dt) {
     e.x += (dx / d * e.sp + e.kx) * dt;
     e.y += (dy / d * e.sp + e.ky) * dt;
     e.kx *= Math.pow(0.005, dt); e.ky *= Math.pow(0.005, dt);
-    // プレイヤー接触
+    // プレイヤー接触（白麹：20%で弾く）
     if (d < e.r + 14 && p.inv <= 0) {
+      if (kojiIs('white') && Math.random() < 0.2) {
+        p.inv = 0.5;
+        addText(p.x, p.y - 34, '白麹が弾いた！', '#d9e8ff', 14);
+        e.kx += -(dx / d) * 300; e.ky += -(dy / d) * 300;
+        continue;
+      }
       p.hp--; p.inv = 1.1; G.shake = 10;
       for (const o of G.enemies) {
         const ox = o.x - p.x, oy = o.y - p.y, od = Math.hypot(ox, oy) || 1;
@@ -611,15 +666,16 @@ function draw() {
     const pr = G.swing.t / SWEEP.time;
     const a0 = G.swing.face - SWEEP.arc / 2;
     const a1 = a0 + SWEEP.arc * pr;
+    const sr = G.swing.range || SWEEP.range;
     cx.beginPath();
     cx.moveTo(p.x, p.y);
-    cx.arc(p.x, p.y, SWEEP.range, a0, a1);
+    cx.arc(p.x, p.y, sr, a0, a1);
     cx.closePath();
     cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
     cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
     cx.beginPath();
     cx.moveTo(p.x + Math.cos(a1) * 14, p.y + Math.sin(a1) * 14);
-    cx.lineTo(p.x + Math.cos(a1) * (SWEEP.range - 6), p.y + Math.sin(a1) * (SWEEP.range - 6));
+    cx.lineTo(p.x + Math.cos(a1) * (sr - 6), p.y + Math.sin(a1) * (sr - 6));
     cx.stroke();
   }
 
@@ -669,6 +725,7 @@ function draw() {
   cx.textBaseline = 'bottom';
   cx.font = '13px serif';
   cx.fillStyle = '#9a8c72';
+  cx.fillText(weaponText(META.weapon), W - 20, H - 44);
   cx.fillText(riceText(META.rice), W - 20, H - 26);
   cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
   // コンボ
@@ -719,6 +776,34 @@ function draw() {
     cx.fillStyle = '#f2e9d4';
     cx.font = 'bold 40px serif';
     cx.fillText('上槽！　' + G.node.name + ' 制圧', W / 2, H / 2 - 110);
+    if (G.result.weaponChoice && !G.result.weaponDone) {
+      // ---- 武器（麹）ページ：火落ち菌の戦利品 ----
+      const wd = G.result.weaponDrop;
+      cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
+      cx.fillText('火落ち菌の戦利品', W / 2, H / 2 - 72);
+      cx.font = 'bold 26px serif'; cx.fillStyle = '#b8d98a';
+      cx.fillText(KOJI[wd.koji].name + '×' + STYLE[wd.style].name + ' の大刀', W / 2, H / 2 - 40);
+      cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
+      cx.fillText(KOJI[wd.koji].desc + '　' + STYLE[wd.style].desc, W / 2, H / 2 - 4);
+      cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+      cx.fillText('←→で選択', W / 2, H / 2 + 26);
+      const wopts = [
+        { label: '新しい大刀に持ち替える', w: wd },
+        { label: '今の大刀でいく　　　　', w: META.weapon },
+      ];
+      wopts.forEach((o, i) => {
+        const sel = G.wchoice === i;
+        cx.font = (sel ? 'bold ' : '') + '16px serif';
+        cx.fillStyle = sel ? '#ffd76e' : '#8a7c62';
+        cx.fillText((sel ? '▶ ' : '　 ') + o.label + '：' + weaponText(o.w), W / 2, H / 2 + 52 + i * 28);
+      });
+      if (G.resultT > 0.6 && Math.floor(G.t * 2) % 2 === 0) {
+        cx.font = '17px serif'; cx.fillStyle = '#9a8c72';
+        cx.fillText('Space で決定（次は酒米）', W / 2, H / 2 + 130);
+      }
+      return;
+    }
+    // ---- 酒米ページ ----
     const d = G.result.drop;
     if (G.riceBossDone) {
       cx.font = '15px serif'; cx.fillStyle = '#c9a0ff';
@@ -731,6 +816,10 @@ function draw() {
     cx.font = '17px serif';
     cx.fillStyle = '#c8bda0';
     cx.fillText(subKeys.length ? subKeys.map(k => SUBS[k].name + '（' + SUBS[k].desc + '）').join('　') : 'サブスキルなし', W / 2, H / 2 - 4);
+    if (G.result.weaponAuto) {
+      cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
+      cx.fillText('はじめての麹武器：' + weaponText(META.weapon) + ' を装備！', W / 2, H / 2 + 104);
+    }
     if (G.result.needChoice) {
       const opts = [
         { label: '新しい酒米を着る', rice: d },
@@ -835,7 +924,8 @@ function drawMap() {
   // 装備と操作
   cx.textAlign = 'right'; cx.textBaseline = 'bottom';
   cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
-  cx.fillText('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）', W - 20, H - 44);
+  cx.fillText('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）', W - 20, H - 62);
+  cx.fillText(weaponText(META.weapon), W - 20, H - 44);
   cx.fillText(riceText(META.rice), W - 20, H - 26);
   cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
   cx.textAlign = 'center';
