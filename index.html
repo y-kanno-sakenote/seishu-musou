@@ -47,6 +47,15 @@ window.META = META; // デバッグ用
 // 精米歩合→櫂入れダメージ（数値層の攻撃力100/140/170を1/10スケールで移植）
 function weaponDmg() { return { 70: 10, 50: 14, 35: 17 }[META.polish] || 10; }
 
+// 酵母（発酵技）。数値層の確定値をゲージ60スケールで移植（コスト100/100/80→60/60/48）
+const YEASTS = {
+  y7: { name: 'きょうかい7号', short: '7号', cost: 60, desc: '全体アルコール爆発' },
+  y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン' },
+  y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '敵全体を3秒凍結' },
+};
+if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ。地方制圧で会得
+if (!YEASTS[META.yeast]) META.yeast = 'y7';
+
 // 酒米（防具）まわり
 const RARITY = [
   { label: '並',    color: '#c8bda0', slots: [0, 0] },
@@ -113,6 +122,10 @@ addEventListener('keydown', e => {
   keys[e.code] = true;
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   const ok = e.code === 'Space' || e.code === 'Enter';
+  if (e.code === 'KeyC' && META.yeasts.length > 1) { // 酵母切替はどの画面でも
+    META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length];
+    saveMeta();
+  }
   if (G.mode === 'over') { if (e.code === 'KeyR') restartRegion(); return; }
   if (G.mode === 'result') {
     if (G.result && G.result.needChoice && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) G.choice = 1 - G.choice;
@@ -144,6 +157,7 @@ const G = {
   swing: null, spawnT: 0,
   hiochi: null, alarm: 0,
   result: null, resultT: 0,
+  freezeT: 0, beam: null, newYeast: null, // 6号の凍結／9号のビーム演出／会得告知
 };
 window.G = G; // デバッグ用
 
@@ -167,6 +181,7 @@ function startKura(node) {
   G.kuraAlcohol = 0; G.kuraStart = G.t; G.hiochiDone = false;
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
+  G.freezeT = 0; G.beam = null;
   const hp = G.player ? Math.min(G.player.hp + 1, 5) : 5; // 蔵を越えると一杯回復
   G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp, inv: 0, atkCd: 0 };
   for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
@@ -254,10 +269,32 @@ function attack() {
 }
 
 function ferment() {
-  G.glucose = 0;
-  G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275 });
+  const y = YEASTS[META.yeast];
+  G.glucose = Math.max(G.glucose - y.cost, 0);
   G.shake = 14;
-  addText(G.player.x, G.player.y - 60, '発酵！アルコール爆発！', '#ffd76e', 26);
+  const tMul = riceHas('teion') ? 1.3 : 1;
+  if (META.yeast === 'y7') { // 全体アルコール爆発（衝撃波）
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275 });
+    addText(G.player.x, G.player.y - 60, '発酵！アルコール爆発！', '#ffd76e', 26);
+  } else if (META.yeast === 'y9') { // 単体大打撃＋スタン2秒（火落ち菌優先）
+    let target = G.hiochi;
+    if (!target) {
+      let best = 1e9;
+      for (const e of G.enemies) {
+        const score = Math.hypot(e.x - G.player.x, e.y - G.player.y) - (e.elite ? 300 : 0);
+        if (score < best) { best = score; target = e; }
+      }
+    }
+    if (target) {
+      const dmg = Math.round(20 * weaponDmg() * tMul * (target.hiochi && riceHas('hiire') ? 1.5 : 1));
+      target.hp -= dmg; target.flash = 0.25; target.stunT = 2;
+      G.beam = { x1: G.player.x, y1: G.player.y, x2: target.x, y2: target.y, t: 0.25 };
+      addText(target.x, target.y - 44, '9号の一撃！💫', '#8ad9c8', 22);
+    }
+  } else if (META.yeast === 'y6') { // 敵全体を3秒凍結（凍結中は再生も止まる）
+    G.freezeT = 3;
+    addText(G.player.x, G.player.y - 60, '6号！もろみが静まる…', '#9ad9ff', 24);
+  }
 }
 
 function addText(x, y, str, col, size) {
@@ -299,9 +336,13 @@ function joso() {
   G.choice = needChoice && drop.rarity > cur.rarity ? 0 : 1; // レア度が上なら「着る」を初期選択
   // 精米イベント：地方1・地方2の総本山制圧で研ぎが進む
   let polished = null;
+  G.newYeast = null;
   if (G.node.boss) {
     if (G.regionIdx === 1 && META.polish === 70) { META.polish = 50; polished = '70%→50%（攻撃力+40%）'; }
     if (G.regionIdx === 2 && META.polish === 50) { META.polish = 35; polished = '50%→35%（攻撃力+70%）'; }
+    // 酵母の会得：地方1→9号、地方2→6号
+    if (G.regionIdx === 1 && !META.yeasts.includes('y9')) { META.yeasts.push('y9'); G.newYeast = 'y9'; }
+    else if (G.regionIdx === 2 && !META.yeasts.includes('y6')) { META.yeasts.push('y6'); G.newYeast = 'y6'; }
     META.bestRegion = Math.max(META.bestRegion, G.regionIdx + 1);
   }
   saveMeta();
@@ -351,7 +392,7 @@ function update(dt) {
   // 攻撃
   p.atkCd -= dt;
   if (keys.Space && p.atkCd <= 0) attack();
-  if ((keys.KeyX || keys.Enter) && G.glucose >= G.glucoseMax) ferment();
+  if ((keys.KeyX || keys.Enter) && G.glucose >= YEASTS[META.yeast].cost) ferment();
   if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
   p.inv -= dt;
 
@@ -370,16 +411,21 @@ function update(dt) {
   if (!G.hiochiDone && !G.hiochi && G.kuraAlcohol >= 70) spawnHiochi();
   if (G.hiochi) G.kuraAlcohol = Math.max(G.kuraAlcohol - 2 * dt, 0);
   G.alarm = Math.max(G.alarm - dt, 0);
+  G.freezeT = Math.max(G.freezeT - dt, 0);
+  if (G.beam) { G.beam.t -= dt; if (G.beam.t <= 0) G.beam = null; }
 
   // 敵更新
   for (let i = G.enemies.length - 1; i >= 0; i--) {
     const e = G.enemies[i];
     if (e.hp <= 0) { kill(e, i); continue; }
     e.flash -= dt;
+    if (G.freezeT > 0) continue; // 6号の凍結：動かない・殴らない・再生もしない
+    e.stunT = (e.stunT || 0) - dt;
     if (e.hiochi) { // 自己再生：放置すると押し返される
       e.regenT += dt;
       if (e.regenT >= 1.5) { e.regenT = 0; e.hp = Math.min(e.hp + e.regen, e.maxHp); }
     }
+    if (e.stunT > 0) continue; // 9号のスタン：動けない（再生はする）
     const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1;
     e.x += (dx / d * e.sp + e.kx) * dt;
     e.y += (dy / d * e.sp + e.ky) * dt;
@@ -409,7 +455,7 @@ function update(dt) {
       if (e.hiochi) { // 火落ち菌は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
         if (e.hitBy !== w) {
           e.hitBy = w;
-          e.hp -= Math.round(120 * (riceHas('teion') ? 1.3 : 1) * (riceHas('hiire') ? 1.5 : 1));
+          e.hp -= Math.round(12 * weaponDmg() * (riceHas('teion') ? 1.3 : 1) * (riceHas('hiire') ? 1.5 : 1)); // 精米で発酵も伸びる
           e.flash = 0.2;
           if (e.hp <= 0) kill(e, j);
         }
@@ -459,11 +505,24 @@ function draw() {
     cx.fill();
   }
 
+  // 凍結（6号）：もろみが静まる
+  if (G.freezeT > 0) {
+    cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r, 0, 7);
+    cx.fillStyle = 'rgba(150,205,255,' + Math.min(0.10 * G.freezeT, 0.25) + ')';
+    cx.fill();
+  }
+
   // 衝撃波
   for (const w of G.waves) {
     cx.beginPath(); cx.arc(w.x, w.y, w.r, 0, 7);
     cx.strokeStyle = 'rgba(255,215,110,' + (1 - w.r / w.max) + ')';
     cx.lineWidth = 16; cx.stroke();
+  }
+  // 9号のビーム
+  if (G.beam) {
+    cx.strokeStyle = 'rgba(138,217,200,' + Math.min(G.beam.t * 4, 1) + ')';
+    cx.lineWidth = 6; cx.lineCap = 'round';
+    cx.beginPath(); cx.moveTo(G.beam.x1, G.beam.y1); cx.lineTo(G.beam.x2, G.beam.y2); cx.stroke();
   }
 
   // 敵
@@ -598,7 +657,9 @@ function draw() {
     cx.fillText('糖', 18, H - 14);
     cx.restore();
   }
-  if (mr >= 1 && Math.floor(G.t * 3) % 2) {
+  cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
+  cx.fillText('酵母：' + YEASTS[META.yeast].name + (META.yeasts.length > 1 ? '　C切替' : ''), 74, H - 48);
+  if (G.glucose >= YEASTS[META.yeast].cost && Math.floor(G.t * 3) % 2) {
     cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
     cx.fillText('Xで発酵！', 74, H - 30);
   }
@@ -725,6 +786,7 @@ function drawMap() {
   // 装備と操作
   cx.textAlign = 'right'; cx.textBaseline = 'bottom';
   cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
+  cx.fillText('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）', W - 20, H - 44);
   cx.fillText(riceText(META.rice), W - 20, H - 26);
   cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
   cx.textAlign = 'center';
@@ -742,6 +804,11 @@ function drawRegionClear() {
   cx.fillText('総アルコール 100 ／ ここまで ' + G.kills + ' 斬', W / 2, H / 2 - 10);
   cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('次の地方は敵が強くなり、酒米のドロップも上等になる', W / 2, H / 2 + 30);
+  if (G.newYeast) {
+    const y = YEASTS[G.newYeast];
+    cx.font = 'bold 20px serif'; cx.fillStyle = '#8ad9c8';
+    cx.fillText('新酵母を会得：' + y.name + '（' + y.desc + '）　Cキーで切替', W / 2, H / 2 + 118);
+  }
   if (G.clearT > 0.8 && Math.floor(G.t * 2) % 2 === 0) {
     cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
     cx.fillText('Space で ' + REGION_NAMES[G.regionIdx % REGION_NAMES.length] + '地方へ進軍', W / 2, H / 2 + 84);
