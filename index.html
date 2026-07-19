@@ -14,8 +14,9 @@
 <canvas id="cv"></canvas>
 <script>
 // ============================================================
-// もろみ無双 プロトタイプ
-// 櫂棒で雑菌の大群をなぎ倒す。移動:WASD/矢印 攻撃:Space 無双:X
+// もろみ無双 プロトタイプ（清酒無双の手触り層）
+// 櫂棒で雑菌の大群をなぎ倒す。移動:WASD/矢印 攻撃:Space 発酵:X
+// 並行複発酵＝櫂入れヒットで糖化（ブドウ糖チャージ）→消費して発酵（アルコール爆発）
 // ============================================================
 const cv = document.getElementById('cv');
 const cx = cv.getContext('2d');
@@ -46,7 +47,7 @@ const G = {
   t: 0, over: false, shake: 0,
   kills: 0, best: +(localStorage.getItem('moromi_best') || 0),
   combo: 0, comboT: 0,
-  musou: 0, musouMax: 50,
+  glucose: 0, glucoseMax: 60, // 糖化ゲージ（与ダメ1につき+1）
   player: null, enemies: [], particles: [], waves: [], texts: [],
   swing: null, spawnT: 0,
 };
@@ -54,7 +55,7 @@ window.G = G; // デバッグ用
 
 function reset() {
   G.t = 0; G.over = false; G.kills = 0; G.combo = 0; G.comboT = 0;
-  G.musou = 0; G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
+  G.glucose = 0; G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.shake = 0;
   G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp: 5, inv: 0, atkCd: 0 };
   for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
@@ -97,14 +98,17 @@ function attack() {
     e.kx += Math.cos(p.face + da * 0.4) * kb;
     e.ky += Math.sin(p.face + da * 0.4) * kb;
   }
-  if (hit) G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
+  if (hit) {
+    G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
+    G.glucose = Math.min(G.glucose + hit, G.glucoseMax); // 糖化：当てた数だけブドウ糖が溜まる
+  }
 }
 
-function fireMusou() {
-  G.musou = 0;
+function ferment() {
+  G.glucose = 0;
   G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, killed: false });
   G.shake = 14;
-  addText(G.player.x, G.player.y - 60, '醸しの一撃！', '#ffd76e', 26);
+  addText(G.player.x, G.player.y - 60, '発酵！アルコール爆発！', '#ffd76e', 26);
 }
 
 function addText(x, y, str, col, size) {
@@ -115,7 +119,6 @@ function kill(e, i) {
   G.enemies.splice(i, 1);
   G.kills++;
   G.combo++; G.comboT = 1.3;
-  G.musou = Math.min(G.musou + 1, G.musouMax);
   for (let k = 0; k < (e.elite ? 14 : 6); k++) {
     const a = Math.random() * Math.PI * 2, v = 40 + Math.random() * 130;
     G.particles.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.4 + Math.random() * 0.3, elite: e.elite });
@@ -152,7 +155,7 @@ function update(dt) {
   // 攻撃
   p.atkCd -= dt;
   if (keys.Space && p.atkCd <= 0) attack();
-  if ((keys.KeyX || keys.Enter) && G.musou >= G.musouMax) fireMusou();
+  if ((keys.KeyX || keys.Enter) && G.glucose >= G.glucoseMax) ferment();
   if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
   p.inv -= dt;
 
@@ -331,27 +334,27 @@ function draw() {
     cx.font = 'bold ' + Math.min(22 + G.combo * 0.4, 40) + 'px serif';
     cx.fillText(G.combo + ' 連斬', W / 2, 14);
   }
-  // 無双ゲージ（「醸」の文字が満ちる）
-  const mr = G.musou / G.musouMax;
+  // 糖化ゲージ（「糖」の文字が満ちる）
+  const mr = G.glucose / G.glucoseMax;
   cx.textAlign = 'left'; cx.textBaseline = 'bottom';
   cx.font = 'bold 44px serif';
   cx.fillStyle = 'rgba(255,215,110,0.18)';
-  cx.fillText('醸', 18, H - 14);
+  cx.fillText('糖', 18, H - 14);
   if (mr > 0) {
     cx.save();
     cx.beginPath(); cx.rect(0, H - 14 - 48 * mr, 90, 48 * mr); cx.clip();
     cx.fillStyle = mr >= 1 ? '#ffd76e' : '#b8a26e';
-    cx.fillText('醸', 18, H - 14);
+    cx.fillText('糖', 18, H - 14);
     cx.restore();
   }
   if (mr >= 1 && Math.floor(G.t * 3) % 2) {
     cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
-    cx.fillText('Xで無双！', 74, H - 30);
+    cx.fillText('Xで発酵！', 74, H - 30);
   }
   // 操作説明
   cx.textAlign = 'center';
   cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
-  cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ　X: 醸しの一撃', W / 2, H - 8);
+  cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ（糖化）　X: 発酵', W / 2, H - 8);
 
   // ゲームオーバー
   if (G.over) {
