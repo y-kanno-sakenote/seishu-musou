@@ -71,10 +71,11 @@ function kojiIs(k) { return !!(META.weapon && META.weapon.koji === k); }
 function styleIs(s) { return !!(META.weapon && META.weapon.style === s); }
 
 // 酵母（発酵技）。数値層の確定値をゲージ60スケールで移植（コスト100/100/80→60/60/48）
+// 酵母は出撃前に選ぶロードアウト（戦闘中の切替は不可・2026-07-19実機フィードバック）
 const YEASTS = {
-  y7: { name: 'きょうかい7号', short: '7号', cost: 60, desc: '全体アルコール爆発' },
-  y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン' },
-  y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '敵全体を3秒凍結' },
+  y7: { name: 'きょうかい7号', short: '7号', cost: 60, desc: '全体アルコール爆発', ult: '大発酵・アルコール爆発', color: '#ffd76e' },
+  y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン', ult: '一点突破・酵母の槍', color: '#8ad9c8' },
+  y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '敵全体を3秒凍結', ult: '静寂・もろみ鎮め', color: '#9ad9ff' },
 };
 if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ
 if (!YEASTS[META.yeast]) META.yeast = 'y7';
@@ -212,7 +213,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyM') { META.mute = !META.mute; saveMeta(); }
   const ok = e.code === 'Space' || e.code === 'Enter';
   if (G.mode === 'title') { if (ok) G.mode = 'map'; return; }
-  if (e.code === 'KeyC' && META.yeasts.length > 1) { // 酵母切替はどの画面でも
+  if (e.code === 'KeyC' && META.yeasts.length > 1 && G.mode !== 'battle') { // 酵母切替は戦闘外のみ
     META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length];
     saveMeta();
   }
@@ -255,7 +256,6 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 // 左側ドラッグ=仮想スティック（タッチ時は櫂入れ自動）／右下ボタン=発酵・酵母切替／メニューはタップ
 let stickId = null, stickBase = null, stickCur = null;
 const FERMENT_BTN = { x: W - 80, y: H - 96, r: 44 };
-const YEAST_BTN = { x: W - 80, y: H - 190, r: 28 };
 const MAP_EQUIP_BTN = { x: 20, y: H - 56, w: 104, h: 38 };
 const EQUIP_BACK_BTN = { x: 20, y: 20, w: 104, h: 38 };
 function canvasPos(e) {
@@ -278,10 +278,6 @@ cv.addEventListener('pointerdown', e => {
   if (G.mode === 'equip') { equipTap(p); return; }
   if (G.mode === 'battle') {
     if (inBtn(p, FERMENT_BTN)) { if (G.glucose >= YEASTS[META.yeast].cost) ferment(); return; }
-    if (inBtn(p, YEAST_BTN)) {
-      if (META.yeasts.length > 1) { META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length]; saveMeta(); }
-      return;
-    }
     if (p.x < W * 0.55) { stickId = e.pointerId; stickBase = p; stickCur = p; }
   }
 });
@@ -342,6 +338,7 @@ const G = {
   pendingWeapon: null, wchoice: 0, // 火落ち菌の戦利品（麹武器）と上槽での選択
   result: null, resultT: 0,
   freezeT: 0, beam: null, // 6号の凍結／9号のビーム演出
+  banner: null, flash: null, hitstop: 0, // 必殺技カットイン・画面フラッシュ・ヒットストップ
 };
 window.G = G; // デバッグ用
 
@@ -366,6 +363,7 @@ function startKura(node) {
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
   G.freezeT = 0; G.beam = null;
+  G.banner = null; G.flash = null; G.hitstop = 0;
   G.riceBoss = null; G.riceBossDone = false;
   G.pendingWeapon = null;
   const hp = G.player ? Math.min(G.player.hp + 1, 5) : 5; // 蔵を越えると一杯回復
@@ -493,11 +491,16 @@ function ferment() {
   G.glucose = Math.max(G.glucose - y.cost, 0);
   G.shake = 14;
   sfx('ferment');
+  G.banner = { str: y.ult, color: y.color, t: 1.1 }; // 必殺技カットイン
   const tMul = riceHas('teion') ? 1.3 : 1;
-  if (META.yeast === 'y7') { // 全体アルコール爆発（衝撃波）
+  if (META.yeast === 'y7') { // 大発酵・アルコール爆発：三重の爆発輪＋金色フラッシュ
     G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275 });
-    addText(G.player.x, G.player.y - 60, '発酵！アルコール爆発！', '#ffd76e', 26);
-  } else if (META.yeast === 'y9') { // 単体大打撃＋スタン2秒（火落ち菌→米武将の優先順）
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, delay: 0.12, deco: true });
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, delay: 0.24, deco: true });
+    G.flash = { rgb: '255,215,110', t: 0.3, max: 0.3 };
+    G.hitstop = 0.08;
+    G.shake = 18;
+  } else if (META.yeast === 'y9') { // 一点突破・酵母の槍：ヒットストップ＋貫きビーム（火落ち菌→米武将の優先順）
     let target = G.hiochi || G.riceBoss;
     if (!target) {
       let best = 1e9;
@@ -508,13 +511,23 @@ function ferment() {
     }
     if (target) {
       const dmg = Math.round(20 * weaponDmg() * tMul * (target.hiochi && riceHas('hiire') ? 1.5 : 1));
-      target.hp -= dmg; target.flash = 0.25; target.stunT = 2;
-      G.beam = { x1: G.player.x, y1: G.player.y, x2: target.x, y2: target.y, t: 0.25 };
-      addText(target.x, target.y - 44, '9号の一撃！💫', '#8ad9c8', 22);
+      target.hp -= dmg; target.flash = 0.3; target.stunT = 2;
+      G.beam = { x1: G.player.x, y1: G.player.y, x2: target.x, y2: target.y, t: 0.35 };
+      G.flash = { rgb: '138,217,200', t: 0.2, max: 0.2 };
+      G.hitstop = 0.2; // 一瞬、時が止まる
+      for (let k = 0; k < 16; k++) { // 突きの衝撃粒子
+        const a = Math.random() * Math.PI * 2, v = 80 + Math.random() * 240;
+        G.particles.push({ x: target.x, y: target.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.35 + Math.random() * 0.25, elite: true });
+      }
+      addText(target.x, target.y - 48, '💫', '#8ad9c8', 30);
     }
-  } else if (META.yeast === 'y6') { // 敵全体を3秒凍結（凍結中は再生も止まる）
+  } else if (META.yeast === 'y6') { // 静寂・もろみ鎮め：青いフラッシュと舞う結晶（凍結中は再生も止まる）
     G.freezeT = 3;
-    addText(G.player.x, G.player.y - 60, '6号！もろみが静まる…', '#9ad9ff', 24);
+    G.flash = { rgb: '154,217,255', t: 0.35, max: 0.35 };
+    for (let k = 0; k < 8; k++) {
+      const a = Math.random() * Math.PI * 2, rr = Math.random() * (ARENA.r - 40);
+      addText(ARENA.x + Math.cos(a) * rr, ARENA.y + Math.sin(a) * rr, '❄', '#c8e8ff', 16 + Math.random() * 12);
+    }
   }
 }
 
@@ -681,6 +694,8 @@ function update(dt) {
   G.alarm = Math.max(G.alarm - dt, 0);
   G.freezeT = Math.max(G.freezeT - dt, 0);
   if (G.beam) { G.beam.t -= dt; if (G.beam.t <= 0) G.beam = null; }
+  if (G.banner) { G.banner.t -= dt; if (G.banner.t <= 0) G.banner = null; }
+  if (G.flash) { G.flash.t -= dt; if (G.flash.t <= 0) G.flash = null; }
 
   // 敵更新
   for (let i = G.enemies.length - 1; i >= 0; i--) {
@@ -724,8 +739,9 @@ function update(dt) {
   // 発酵の衝撃波
   for (let i = G.waves.length - 1; i >= 0; i--) {
     const w = G.waves[i];
+    if (w.delay && w.delay > 0) { w.delay -= dt; continue; }
     w.r += 900 * dt;
-    for (let j = G.enemies.length - 1; j >= 0; j--) {
+    if (!w.deco) for (let j = G.enemies.length - 1; j >= 0; j--) {
       const e = G.enemies[j];
       if (Math.hypot(e.x - w.x, e.y - w.y) >= w.r + e.r) continue;
       if (e.hiochi || e.riceBoss) { // ボス級は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
@@ -888,6 +904,22 @@ function draw() {
     cx.fillStyle = 'rgba(255,40,30,' + (0.22 * G.alarm) + ')';
     cx.fillRect(0, 0, W, H);
   }
+  // 必殺フラッシュ
+  if (G.flash) {
+    cx.fillStyle = 'rgba(' + G.flash.rgb + ',' + (0.28 * G.flash.t / G.flash.max).toFixed(3) + ')';
+    cx.fillRect(0, 0, W, H);
+  }
+  // 必殺技カットイン
+  if (G.banner) {
+    cx.globalAlpha = Math.min(G.banner.t * 2.5, 1);
+    cx.fillStyle = 'rgba(20,12,8,0.55)';
+    cx.fillRect(0, H * 0.30, W, 64);
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.font = 'bold 38px serif';
+    cx.fillStyle = G.banner.color;
+    cx.fillText(G.banner.str, W / 2, H * 0.30 + 32);
+    cx.globalAlpha = 1;
+  }
 
   // ---- UI ----
   cx.textAlign = 'left'; cx.textBaseline = 'top';
@@ -938,7 +970,7 @@ function draw() {
     cx.restore();
   }
   cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
-  cx.fillText('酵母：' + YEASTS[META.yeast].name + (META.yeasts.length > 1 ? '　C切替' : ''), 74, H - 48);
+  cx.fillText('必殺：' + YEASTS[META.yeast].ult + '（' + YEASTS[META.yeast].short + '）', 74, H - 48);
   if (G.glucose >= YEASTS[META.yeast].cost && Math.floor(G.t * 3) % 2) {
     cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
     cx.fillText('Xで発酵！', 74, H - 30);
@@ -952,12 +984,6 @@ function draw() {
     cx.fill();
     cx.font = 'bold 20px serif'; cx.fillStyle = ready ? '#3a2c14' : '#141008';
     cx.fillText('発酵', FERMENT_BTN.x, FERMENT_BTN.y);
-    if (META.yeasts.length > 1) {
-      cx.beginPath(); cx.arc(YEAST_BTN.x, YEAST_BTN.y, YEAST_BTN.r, 0, 7);
-      cx.fillStyle = 'rgba(138,217,200,0.3)'; cx.fill();
-      cx.font = 'bold 14px serif'; cx.fillStyle = '#c8e8e0';
-      cx.fillText(YEASTS[META.yeast].short, YEAST_BTN.x, YEAST_BTN.y);
-    }
     if (stickBase && stickCur) {
       cx.beginPath(); cx.arc(stickBase.x, stickBase.y, 40, 0, 7);
       cx.strokeStyle = 'rgba(255,255,255,0.3)'; cx.lineWidth = 3; cx.stroke();
@@ -1219,7 +1245,7 @@ function drawTitle() {
     cx.fillText('Space で仕込み開始', W / 2, H - 86);
   }
   cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
-  cx.fillText('WASD/矢印: 移動　Space: 櫂入れ　X: 発酵　C: 酵母切替　E: 装備　R: 再仕込み　M: 音　※スマホはタッチ操作', W / 2, H - 40);
+  cx.fillText('WASD/矢印: 移動　Space: 櫂入れ　X: 必殺（装備中の酵母で技が変わる）　E: 装備　R: 再仕込み　M: 音　※スマホはタッチ操作', W / 2, H - 40);
 }
 
 // ---- 進軍マップ描画 ----
@@ -1315,8 +1341,10 @@ function drawRegionClear() {
 // ---- ループ ----
 let last = performance.now();
 function loop(now) {
-  const dt = Math.min((now - last) / 1000, 0.05);
+  const rawDt = Math.min((now - last) / 1000, 0.05);
   last = now;
+  let dt = rawDt;
+  if (G.hitstop > 0) { G.hitstop -= rawDt; dt = rawDt * 0.15; } // 必殺のヒットストップ
   update(dt);
   draw();
   requestAnimationFrame(loop);
