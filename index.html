@@ -76,7 +76,7 @@ const SUBS = {
   meisui:  { name: '名水仕込み',    desc: '環境無効' },     // 泥蔵・寒蔵の環境悪化を打ち消す
   hiire:   { name: '火入れの極意',  desc: '対火落ち+50%' }, // 火落ち菌へのダメージ増
 };
-function rollDrop(tier) {
+function rollDrop(tier, forcedName) {
   const table = DROP_TABLE[Math.max(0, Math.min(tier, 3))];
   let r = Math.random(), rarity = 0;
   for (let i = 0; i < 4; i++) { r -= table[i]; if (r < 0) { rarity = i; break; } }
@@ -85,7 +85,8 @@ function rollDrop(tier) {
   const pool = Object.keys(SUBS);
   const subs = {};
   for (const k of pool.sort(() => Math.random() - 0.5).slice(0, n)) subs[k] = true;
-  const name = Math.random() < 0.5 ? '山田錦の魂' : '五百万石の魂';
+  // 米武将を浄化した蔵は、その武将の魂が確定で宿る
+  const name = forcedName || (Math.random() < 0.5 ? '山田錦の魂' : '五百万石の魂');
   return { name, rarity, subs };
 }
 function riceHas(key) { return !!(META.rice && META.rice.subs && META.rice.subs[key]); }
@@ -101,13 +102,14 @@ function regionName() {
   return G.regionIdx > REGION_NAMES.length ? base + '·' + Math.ceil(G.regionIdx / REGION_NAMES.length) + '周' : base;
 }
 // 進軍図：rank0=先鋒 → rank1=分岐 → rank2=総本山
+// rice/bossName: その蔵に囚われた米武将。浄化（撃破）すると同種の米が確定ドロップ
 const RANKS = [
   [{ name: '先鋒の蔵', desc: '標準の仕込み', mod: {} }],
   [
-    { name: '泥蔵', desc: '野生酵母が多い', mod: { elite: 2.5 } },
-    { name: '寒蔵', desc: '雑菌の湧きが激しい', mod: { spawn: 1.35 } },
+    { name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦' },
+    { name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石' },
   ],
-  [{ name: '総本山・山田錦の巨大蔵', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true }],
+  [{ name: '総本山・山田錦の巨大蔵', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true, rice: '山田錦の魂', bossName: '大将・洗脳された山田錦' }],
 ];
 const GAUGE_ADD = [30, 30, 40]; // 蔵制圧ごとの地方総アルコール上昇
 function kuraLevel() { return (G.regionIdx - 1) * 3 + G.rank + 1; } // 敵スケールの通し番手
@@ -156,6 +158,7 @@ const G = {
   player: null, enemies: [], particles: [], waves: [], texts: [],
   swing: null, spawnT: 0,
   hiochi: null, alarm: 0,
+  riceBoss: null, riceBossDone: false, // 洗脳された米武将（浄化するまで上槽できない）
   result: null, resultT: 0,
   freezeT: 0, beam: null, newYeast: null, // 6号の凍結／9号のビーム演出／会得告知
 };
@@ -182,6 +185,7 @@ function startKura(node) {
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
   G.freezeT = 0; G.beam = null;
+  G.riceBoss = null; G.riceBossDone = false;
   const hp = G.player ? Math.min(G.player.hp + 1, 5) : 5; // 蔵を越えると一杯回復
   G.player = { x: ARENA.x, y: ARENA.y, face: -Math.PI / 2, hp, inv: 0, atkCd: 0 };
   for (let i = 0; i < 20; i++) spawnEnemy(false); // 開幕から群れがいる
@@ -231,11 +235,39 @@ function spawnHiochi() {
   addText(ARENA.x, ARENA.y - 88, '殺菌するまで発酵度が下がる！', '#ff9d6e', 17);
 }
 
+// ---- 米武将（洗脳された酒米ボス）----
+// 発酵度100で立ちはだかる。浄化（撃破）するまで上槽できない
+function spawnRiceBoss() {
+  const a = Math.random() * Math.PI * 2;
+  const lv = kuraLevel();
+  const big = !!G.node.boss;
+  const hp = Math.round((500 + 120 * (lv - 1)) * (big ? 1.4 : 1));
+  const b = {
+    x: ARENA.x + Math.cos(a) * (ARENA.r - 50),
+    y: ARENA.y + Math.sin(a) * (ARENA.r - 50),
+    kx: 0, ky: 0, wob: 0,
+    riceBoss: true, elite: false,
+    r: big ? 34 : 28, hp, maxHp: hp,
+    sp: 40, flash: 0,
+  };
+  G.enemies.push(b);
+  G.riceBoss = b;
+  G.shake = 14;
+  addText(ARENA.x, ARENA.y - 120, G.node.bossName + 'が立ちはだかる！', '#c9a0ff', 28);
+  addText(ARENA.x, ARENA.y - 88, '浄化するまで上槽できない！', '#b8a26e', 16);
+}
+
 // ---- 発酵度（蔵の制圧ゲージ）----
 function addAlcohol(v) {
   const cap = G.hiochi ? 99 : 100; // 乱入中はクリア不可
   G.kuraAlcohol = Math.min(G.kuraAlcohol + v, cap);
-  if (G.kuraAlcohol >= 100 && G.mode === 'battle') joso();
+  if (G.kuraAlcohol >= 100 && G.mode === 'battle') {
+    if (G.node.bossName && !G.riceBossDone) {
+      if (!G.riceBoss) spawnRiceBoss(); // 上槽の前に米武将戦
+    } else {
+      joso();
+    }
+  }
 }
 
 // ---- 攻撃 ----
@@ -257,7 +289,7 @@ function attack() {
     if (Math.abs(da) > SWEEP.arc / 2) continue;
     e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
-    const kb = e.hiochi ? 30 : e.elite ? 90 : 260;
+    const kb = (e.hiochi || e.riceBoss) ? 30 : e.elite ? 90 : 260;
     e.kx += Math.cos(p.face + da * 0.4) * kb;
     e.ky += Math.sin(p.face + da * 0.4) * kb;
   }
@@ -276,8 +308,8 @@ function ferment() {
   if (META.yeast === 'y7') { // 全体アルコール爆発（衝撃波）
     G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275 });
     addText(G.player.x, G.player.y - 60, '発酵！アルコール爆発！', '#ffd76e', 26);
-  } else if (META.yeast === 'y9') { // 単体大打撃＋スタン2秒（火落ち菌優先）
-    let target = G.hiochi;
+  } else if (META.yeast === 'y9') { // 単体大打撃＋スタン2秒（火落ち菌→米武将の優先順）
+    let target = G.hiochi || G.riceBoss;
     if (!target) {
       let best = 1e9;
       for (const e of G.enemies) {
@@ -305,11 +337,17 @@ function kill(e, i) {
   G.enemies.splice(i, 1);
   G.kills++;
   G.combo++; G.comboT = 1.3;
-  for (let k = 0; k < (e.hiochi ? 40 : e.elite ? 14 : 6); k++) {
-    const a = Math.random() * Math.PI * 2, v = 40 + Math.random() * (e.hiochi ? 220 : 130);
-    G.particles.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.4 + Math.random() * 0.3, elite: e.elite || e.hiochi });
+  for (let k = 0; k < ((e.hiochi || e.riceBoss) ? 40 : e.elite ? 14 : 6); k++) {
+    const a = Math.random() * Math.PI * 2, v = 40 + Math.random() * ((e.hiochi || e.riceBoss) ? 220 : 130);
+    G.particles.push({ x: e.x, y: e.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.4 + Math.random() * 0.3, elite: e.elite || e.hiochi, pure: e.riceBoss });
   }
-  if (e.hiochi) {
+  if (e.riceBoss) { // 浄化：洗脳が解け、上槽へ
+    G.riceBoss = null;
+    G.riceBossDone = true;
+    G.shake = 14;
+    addText(e.x, e.y, '浄化！正気を取り戻した！', '#e8d9ff', 28);
+    joso();
+  } else if (e.hiochi) {
     G.hiochi = null;
     G.hiochiDone = true;
     G.shake = 14;
@@ -327,8 +365,8 @@ function kill(e, i) {
 function joso() {
   G.mode = 'result'; G.resultT = 0;
   G.regionGauge = Math.min(G.regionGauge + GAUGE_ADD[G.rank], 100);
-  // ドロップのレア度tier：進軍の深さ＋地方の番手で良くなる
-  const drop = rollDrop(G.rank + G.regionIdx - 1);
+  // ドロップのレア度tier：進軍の深さ＋地方の番手で良くなる。米武将を浄化した蔵は同種の米が確定
+  const drop = rollDrop(G.rank + G.regionIdx - 1, G.riceBossDone ? G.node.rice : null);
   // 装備は自動でなくプレイヤーが選ぶ（初回だけ自動装備）
   const cur = META.rice;
   const needChoice = !!cur;
@@ -452,10 +490,10 @@ function update(dt) {
     for (let j = G.enemies.length - 1; j >= 0; j--) {
       const e = G.enemies[j];
       if (Math.hypot(e.x - w.x, e.y - w.y) >= w.r + e.r) continue;
-      if (e.hiochi) { // 火落ち菌は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
+      if (e.hiochi || e.riceBoss) { // ボス級は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
         if (e.hitBy !== w) {
           e.hitBy = w;
-          e.hp -= Math.round(12 * weaponDmg() * (riceHas('teion') ? 1.3 : 1) * (riceHas('hiire') ? 1.5 : 1)); // 精米で発酵も伸びる
+          e.hp -= Math.round(12 * weaponDmg() * (riceHas('teion') ? 1.3 : 1) * (e.hiochi && riceHas('hiire') ? 1.5 : 1)); // 精米で発酵も伸びる
           e.flash = 0.2;
           if (e.hp <= 0) kill(e, j);
         }
@@ -529,15 +567,20 @@ function draw() {
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
   for (const e of G.enemies) {
     const wob = Math.sin(G.t * 6 + e.wob) * 2;
-    if (e.hiochi) {
+    if (e.hiochi || e.riceBoss) {
       const au = cx.createRadialGradient(e.x, e.y, 8, e.x, e.y, 58);
-      au.addColorStop(0, 'rgba(140,10,25,0.55)');
-      au.addColorStop(1, 'rgba(60,0,10,0)');
+      if (e.hiochi) { // 赤黒いオーラ
+        au.addColorStop(0, 'rgba(140,10,25,0.55)');
+        au.addColorStop(1, 'rgba(60,0,10,0)');
+      } else { // 洗脳の紫オーラ
+        au.addColorStop(0, 'rgba(110,40,150,0.55)');
+        au.addColorStop(1, 'rgba(40,0,60,0)');
+      }
       cx.beginPath(); cx.arc(e.x, e.y, 58, 0, 7);
       cx.fillStyle = au; cx.fill();
     }
-    const glyph = e.hiochi ? '👹' : e.elite ? '😈' : '🦠';
-    cx.font = (e.hiochi ? 58 : e.elite ? 44 : 22) + 'px serif';
+    const glyph = e.hiochi ? '👹' : e.riceBoss ? '🍙' : e.elite ? '😈' : '🦠';
+    cx.font = (e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22) + 'px serif';
     if (e.flash > 0) {
       cx.save(); cx.filter = 'brightness(3)';
       cx.fillText(glyph, e.x, e.y + wob);
@@ -545,10 +588,10 @@ function draw() {
     } else {
       cx.fillText(glyph, e.x, e.y + wob);
     }
-    if (e.hiochi) { // ボスHPバー
+    if (e.hiochi || e.riceBoss) { // ボスHPバー
       cx.fillStyle = 'rgba(20,10,8,0.6)';
       cx.fillRect(e.x - 32, e.y - 48, 64, 6);
-      cx.fillStyle = '#ff5a4a';
+      cx.fillStyle = e.hiochi ? '#ff5a4a' : '#b98ad9';
       cx.fillRect(e.x - 32, e.y - 48, 64 * e.hp / e.maxHp, 6);
     }
   }
@@ -583,7 +626,7 @@ function draw() {
   // パーティクル
   for (const q of G.particles) {
     cx.globalAlpha = Math.max(q.t * 2, 0);
-    cx.fillStyle = q.elite ? '#ff9d6e' : '#b8d98a';
+    cx.fillStyle = q.pure ? '#fffdf5' : q.elite ? '#ff9d6e' : '#b8d98a';
     cx.beginPath(); cx.arc(q.x, q.y, q.elite ? 4 : 2.5, 0, 7);
     cx.fill();
   }
@@ -677,9 +720,13 @@ function draw() {
     cx.font = 'bold 40px serif';
     cx.fillText('上槽！　' + G.node.name + ' 制圧', W / 2, H / 2 - 110);
     const d = G.result.drop;
+    if (G.riceBossDone) {
+      cx.font = '15px serif'; cx.fillStyle = '#c9a0ff';
+      cx.fillText('洗脳が解けた。浄化された魂が防具として宿る', W / 2, H / 2 - 72);
+    }
     cx.font = 'bold 26px serif';
     cx.fillStyle = RARITY[d.rarity].color;
-    cx.fillText('ドロップ：' + RARITY[d.rarity].label + '・' + d.name, W / 2, H / 2 - 40);
+    cx.fillText((G.riceBossDone ? '浄化の証：' : 'ドロップ：') + RARITY[d.rarity].label + '・' + d.name, W / 2, H / 2 - 40);
     const subKeys = Object.keys(d.subs);
     cx.font = '17px serif';
     cx.fillStyle = '#c8bda0';
@@ -740,7 +787,9 @@ function drawMap() {
   cx.fillStyle = '#241c14'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
   cx.fillStyle = '#f2e9d4'; cx.font = 'bold 32px serif';
-  cx.fillText(regionName() + '地方 進軍図', W / 2, 64);
+  cx.fillText(regionName() + '地方 進軍図', W / 2, 60);
+  cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
+  cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, 86);
   // 地方の総アルコールゲージ
   cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('地方制圧度（総アルコール）　' + Math.floor(G.regionGauge) + ' / 100', W / 2, 102);
