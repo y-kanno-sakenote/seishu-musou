@@ -39,7 +39,7 @@ const ARENA = { x: W / 2, y: H / 2, r: 285 };
 
 // ---- メタ進行（周回で持ち越す分。localStorage保存）----
 const META_KEY = 'moromi_meta';
-let META = { polish: 70, rice: null, weapon: null, best: 0, bestRegion: 1 };
+let META = { polish: 70, rice: null, weapon: null, bagRice: [], bagWeapons: [], best: 0, bestRegion: 1 };
 try { Object.assign(META, JSON.parse(localStorage.getItem(META_KEY) || '{}')); } catch (e) {}
 function saveMeta() { localStorage.setItem(META_KEY, JSON.stringify(META)); }
 window.META = META; // デバッグ用
@@ -76,8 +76,16 @@ const YEASTS = {
   y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン' },
   y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '敵全体を3秒凍結' },
 };
-if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ。地方制圧で会得
+if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ
 if (!YEASTS[META.yeast]) META.yeast = 'y7';
+if (!Array.isArray(META.bagRice)) META.bagRice = [];
+if (!Array.isArray(META.bagWeapons)) META.bagWeapons = [];
+const BAG_CAP = 10; // 袋は各10個。あふれたら古いものから押し出し（叩き台）
+function bagPush(bag, item) {
+  if (!item) return;
+  bag.push(item);
+  while (bag.length > BAG_CAP) bag.shift();
+}
 
 // 酒米（防具）まわり
 const RARITY = [
@@ -159,7 +167,10 @@ addEventListener('keydown', e => {
     if (r && r.weaponChoice && !r.weaponDone) { // 先に武器（麹）の選択ページ
       if (arrow) G.wchoice = 1 - G.wchoice;
       if (ok && G.resultT > 0.6) {
-        if (G.wchoice === 0) { META.weapon = r.weaponDrop; saveMeta(); }
+        // 選ばなかった方は袋へ（捨てない）
+        if (G.wchoice === 0) { bagPush(META.bagWeapons, META.weapon); META.weapon = r.weaponDrop; }
+        else bagPush(META.bagWeapons, r.weaponDrop);
+        saveMeta();
         r.weaponDone = true;
         G.resultT = 0.3; // 押しっぱなしで米ページまで飛ばない程度の間
       }
@@ -167,7 +178,11 @@ addEventListener('keydown', e => {
     }
     if (r && r.needChoice && arrow) G.choice = 1 - G.choice;
     if (ok && G.resultT > 0.6) {
-      if (r && r.needChoice && G.choice === 0) { META.rice = r.drop; saveMeta(); }
+      if (r && r.needChoice) {
+        if (G.choice === 0) { bagPush(META.bagRice, META.rice); META.rice = r.drop; }
+        else bagPush(META.bagRice, r.drop);
+        saveMeta();
+      }
       afterResult();
     }
     return;
@@ -177,7 +192,20 @@ addEventListener('keydown', e => {
     const nodes = RANKS[G.rank];
     if (['ArrowLeft','KeyA','ArrowUp','KeyW'].includes(e.code)) G.selIdx = (G.selIdx + nodes.length - 1) % nodes.length;
     if (['ArrowRight','KeyD','ArrowDown','KeyS'].includes(e.code)) G.selIdx = (G.selIdx + 1) % nodes.length;
+    if (e.code === 'KeyE') { G.mode = 'equip'; G.eqCol = 0; G.eqIdx = 0; return; }
     if (ok && G.mapT > 0.4) startKura(nodes[G.selIdx]);
+    return;
+  }
+  if (G.mode === 'equip') {
+    if (e.code === 'KeyE' || e.code === 'Escape') { G.mode = 'map'; G.mapT = 0; return; }
+    if (['ArrowLeft','KeyA'].includes(e.code)) { G.eqCol = (G.eqCol + 2) % 3; G.eqIdx = 0; }
+    if (['ArrowRight','KeyD'].includes(e.code)) { G.eqCol = (G.eqCol + 1) % 3; G.eqIdx = 0; }
+    const len = equipCols()[G.eqCol].items.length;
+    if (len > 0) {
+      if (['ArrowUp','KeyW'].includes(e.code)) G.eqIdx = (G.eqIdx + len - 1) % len;
+      if (['ArrowDown','KeyS'].includes(e.code)) G.eqIdx = (G.eqIdx + 1) % len;
+      if (ok) equipSelect();
+    }
     return;
   }
 });
@@ -189,6 +217,7 @@ const G = {
   kills: 0, combo: 0, comboT: 0,
   glucose: 0, glucoseMax: 60, // 糖化ゲージ（ヒット1につき+1）
   regionIdx: 1, rank: 0, regionGauge: 0, node: null, selIdx: 0, mapT: 0, clearT: 0,
+  eqCol: 0, eqIdx: 0, // 装備画面のカーソル
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [],
   swing: null, spawnT: 0,
@@ -582,6 +611,7 @@ function update(dt) {
 // ---- 描画 ----
 function draw() {
   if (G.mode === 'title') { drawTitle(); return; }
+  if (G.mode === 'equip') { drawEquip(); return; }
   if (G.mode === 'map') { drawMap(); return; }
   if (G.mode === 'regionclear') { drawRegionClear(); return; }
   cx.save();
@@ -789,8 +819,8 @@ function draw() {
       cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
       cx.fillText('←→で選択', W / 2, H / 2 + 26);
       const wopts = [
-        { label: '新しい大刀に持ち替える', w: wd },
-        { label: '今の大刀でいく　　　　', w: META.weapon },
+        { label: '持ち替える（今のは袋へ）', w: wd },
+        { label: '袋にしまって今のまま　　', w: META.weapon },
       ];
       wopts.forEach((o, i) => {
         const sel = G.wchoice === i;
@@ -828,8 +858,8 @@ function draw() {
     }
     if (G.result.needChoice) {
       const opts = [
-        { label: '新しい酒米を着る', rice: d },
-        { label: '今の酒米でいく　', rice: META.rice },
+        { label: '着替える（今のは袋へ）', rice: d },
+        { label: '袋にしまって今のまま　', rice: META.rice },
       ];
       cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
       cx.fillText('←→で選択', W / 2, H / 2 + 26);
@@ -891,6 +921,69 @@ function drawEquipUI(withYeast) {
   cx.textAlign = 'right'; cx.textBaseline = 'top';
   cx.fillStyle = '#9a8c72';
   lines.forEach((s, i) => cx.fillText(s, W - 14 - pad, by + pad + i * lh - 2));
+}
+
+// ---- 装備画面（持ち物袋から持ち替える）----
+function equipCols() {
+  return [
+    { title: '武器（大刀）', items: [{ cur: true, w: META.weapon }].concat(META.bagWeapons.map(w => ({ w }))) },
+    { title: '酒米（防具）', items: [{ cur: true, r: META.rice }].concat(META.bagRice.map(r => ({ r }))) },
+    { title: '酵母（発酵技）', items: META.yeasts.map(k => ({ y: k, cur: k === META.yeast })) },
+  ];
+}
+function equipSelect() {
+  if (G.eqCol === 0) {
+    if (G.eqIdx === 0) return; // 装備中を選んでも何もしない
+    const w = META.bagWeapons.splice(G.eqIdx - 1, 1)[0];
+    if (META.weapon) META.bagWeapons.push(META.weapon);
+    META.weapon = w;
+  } else if (G.eqCol === 1) {
+    if (G.eqIdx === 0) return;
+    const r = META.bagRice.splice(G.eqIdx - 1, 1)[0];
+    if (META.rice) META.bagRice.push(META.rice);
+    META.rice = r;
+  } else {
+    META.yeast = META.yeasts[G.eqIdx];
+  }
+  saveMeta();
+  G.eqIdx = 0;
+}
+function itemLabel(it) {
+  if ('y' in it) return YEASTS[it.y].name;
+  if ('w' in it) return it.w ? KOJI[it.w.koji].name + '×' + STYLE[it.w.style].name : '素の大刀';
+  return it.r ? RARITY[it.r.rarity].label + '・' + it.r.name : '酒米なし';
+}
+function itemDetail(it) {
+  if (!it) return '';
+  if ('y' in it) return YEASTS[it.y].name + '：' + YEASTS[it.y].desc + '（コスト' + YEASTS[it.y].cost + '）';
+  if ('w' in it) return weaponText(it.w);
+  return riceText(it.r);
+}
+function drawEquip() {
+  cx.fillStyle = '#241c14'; cx.fillRect(0, 0, W, H);
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px serif';
+  cx.fillText('装備', W / 2, 52);
+  cx.font = '13px serif'; cx.fillStyle = '#8a7c62';
+  cx.fillText('袋は各' + BAG_CAP + '個まで。あふれると古いものから流れていく', W / 2, 82);
+  const cols = equipCols();
+  const xs = [W * 0.2, W * 0.5, W * 0.8];
+  cols.forEach((c, ci) => {
+    cx.font = 'bold 16px serif';
+    cx.fillStyle = ci === G.eqCol ? '#ffd76e' : '#9a8c72';
+    cx.fillText(c.title, xs[ci], 120);
+    c.items.forEach((it, i) => {
+      const sel = ci === G.eqCol && i === G.eqIdx;
+      cx.font = (sel ? 'bold ' : '') + '14px serif';
+      cx.fillStyle = sel ? '#ffd76e' : it.cur ? '#b8d98a' : '#c8bda0';
+      cx.fillText((sel ? '▶ ' : '') + itemLabel(it) + (it.cur ? '（装備中）' : ''), xs[ci], 152 + i * 26);
+    });
+  });
+  // 選択中の詳細
+  cx.font = '14px serif'; cx.fillStyle = '#c8bda0';
+  cx.fillText(itemDetail(cols[G.eqCol].items[G.eqIdx]), W / 2, H - 64);
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+  cx.fillText('←→: 欄　↑↓: 選択　Space: 装備　E: 進軍図へ戻る', W / 2, H - 32);
 }
 
 // ---- タイトル画面 ----
@@ -1014,7 +1107,7 @@ function drawMap() {
   cx.textAlign = 'center'; cx.textBaseline = 'bottom';
   cx.font = '13px serif';
   cx.fillStyle = '#6a5c48';
-  cx.fillText(RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍', W / 2, H - 8);
+  cx.fillText((RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍') + '　E: 装備', W / 2, H - 8);
 }
 
 function drawRegionClear() {
