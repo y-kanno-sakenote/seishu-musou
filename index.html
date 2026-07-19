@@ -3,7 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>清酒無双</title>
+<title>清酒無双 - 醸して、なぎ倒せ。醸造ハクスラ無双</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍶</text></svg>">
+<meta name="description" content="日本酒の醸造工程がそのままゲームシステムに。櫂棒で雑菌の大群をなぎ倒し、糖化→発酵の必殺技で蔵を浄化する醸造ハクスラ無双。">
+<meta property="og:title" content="清酒無双">
+<meta property="og:description" content="醸して、なぎ倒せ。日本酒の醸造工程をハクスラ無双に昇華したブラウザゲーム。スマホ対応（横持ち推奨）">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://y-kanno-sakenote.github.io/seishu-musou/">
+<meta name="twitter:card" content="summary">
 <style>
   html, body { margin: 0; padding: 0; background: #1a1410; overflow: hidden; height: 100%; }
   body { display: flex; align-items: center; justify-content: center; }
@@ -75,7 +82,7 @@ function styleIs(s) { return !!(META.weapon && META.weapon.style === s); }
 const YEASTS = {
   y7: { name: 'きょうかい7号', short: '7号', cost: 60, desc: '全体アルコール爆発', ult: '大発酵・アルコール爆発', color: '#ffd76e' },
   y9: { name: 'きょうかい9号', short: '9号', cost: 60, desc: '単体大打撃＋スタン', ult: '一点突破・酵母の槍', color: '#8ad9c8' },
-  y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '敵全体を3秒凍結', ult: '静寂・もろみ鎮め', color: '#9ad9ff' },
+  y6: { name: 'きょうかい6号', short: '6号', cost: 48, desc: '3秒凍結・凍結中は櫂入れ+50%', ult: '静寂・もろみ鎮め', color: '#9ad9ff' },
 };
 if (!Array.isArray(META.yeasts) || !META.yeasts.length) META.yeasts = ['y7']; // 初期は7号のみ
 if (!YEASTS[META.yeast]) META.yeast = 'y7';
@@ -472,7 +479,8 @@ function attack() {
     let da = Math.atan2(dy, dx) - p.face;
     da = Math.atan2(Math.sin(da), Math.cos(da));
     if (Math.abs(da) > SWEEP.arc / 2) continue;
-    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1); e.flash = 0.12; hit++;
+    // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
+    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const kb = (e.hiochi || e.riceBoss) ? 30 : e.elite ? 90 : 260;
     e.kx += Math.cos(p.face + da * 0.4) * kb;
@@ -1238,6 +1246,10 @@ function drawTitle() {
   if (META.best > 0 || META.bestRegion > 1) {
     cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
     cx.fillText('最高 ' + META.best + ' 斬 ／ 最深 第' + META.bestRegion + '地方　（装備と極意は持ち越し）', W / 2, H - 126);
+  }
+  if (innerHeight > innerWidth) { // 縦持ちのスマホには横持ちを勧める
+    cx.font = 'bold 17px serif'; cx.fillStyle = '#ffd76e';
+    cx.fillText('📱 スマホは横持ち推奨です', W / 2, H - 180);
   }
   // 開始と操作
   if (Math.floor(G.t * 2) % 2 === 0) {
