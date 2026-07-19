@@ -46,7 +46,7 @@ const ARENA = { x: W / 2, y: H / 2, r: 285 };
 
 // ---- メタ進行（周回で持ち越す分。localStorage保存）----
 const META_KEY = 'moromi_meta';
-let META = { v: 1, polish: 70, rice: null, weapon: null, bagRice: [], bagWeapons: [], best: 0, regionClear: {}, mute: false };
+let META = { v: 1, polish: 70, rice: null, weapon: null, bagRice: [], bagWeapons: [], best: 0, regionClear: {}, gokui: [], mute: false };
 try { Object.assign(META, JSON.parse(localStorage.getItem(META_KEY) || '{}')); } catch (e) {}
 function saveMeta() { localStorage.setItem(META_KEY, JSON.stringify(META)); }
 window.META = META; // デバッグ用
@@ -98,6 +98,7 @@ if (!YEASTS[META.yeast]) META.yeast = 'y7';
 if (!Array.isArray(META.bagRice)) META.bagRice = [];
 if (!Array.isArray(META.bagWeapons)) META.bagWeapons = [];
 if (!META.regionClear || typeof META.regionClear !== 'object') META.regionClear = {};
+if (!Array.isArray(META.gokui)) META.gokui = [];
 const BAG_CAP = 10; // 袋は各10個（叩き台）
 function bagPush(bag, item, byRarity) {
   if (!item) return;
@@ -202,18 +203,26 @@ function sfx(type) {
 // 酵母は実在の系譜でピンポイント配置：6号=東北（新政・秋田）／9号=九州（香露・熊本）
 // 武器種は地域の特産：火落ち菌の戦利品がその地域の武器種で固定
 // 地域区分はかもしてぽん（tank5のPREFECTURES）と同一：北海道/東北/関東/甲信/北陸/東海/近畿/中国/四国/九州
+// gim=風土（地域固有ギミック）。fx: esp=敵速度 spawn=湧き elite=野生酵母率 hioHp=火落ちHP bossHp=米武将HP
+//                                glu=糖化量 cost=発酵コスト wave=発酵波半径 psp=自分の移動速度
 const REGIONS10 = [
-  { name: '北海道', weapon: 'daito' },
-  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' } }, // 寒蔵で6号（新政・秋田）
-  { name: '関東', weapon: 'soken' },
-  { name: '甲信', weapon: 'soken' },
-  { name: '北陸', weapon: 'yari' },
-  { name: '東海', weapon: 'soken' },
-  { name: '近畿', weapon: 'daito' },
-  { name: '中国', weapon: 'yari' },
-  { name: '四国', weapon: 'daito' },
-  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' } }, // 泥蔵で9号（香露・熊本）
+  { name: '北海道', weapon: 'daito', gim: { n: '雪原', d: '敵が鈍いが湧きは多い', fx: { esp: 0.9, spawn: 1.1 } } },
+  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' }, gim: { n: '吹雪', d: '寒くて糖化が鈍る（-10%）', fx: { glu: 0.9 } } }, // 寒蔵で6号（新政・秋田）
+  { name: '関東', weapon: 'soken', gim: { n: '喧騒', d: '野生酵母が多い', fx: { elite: 1.3 } } },
+  { name: '甲信', weapon: 'soken', gim: { n: '果香', d: '果実の糖で発酵コスト-10%', fx: { cost: 0.9 } } },
+  { name: '北陸', weapon: 'yari', gim: { n: '淡麗', d: '敵の動きが鋭い', fx: { esp: 1.12 } } },
+  { name: '東海', weapon: 'soken', gim: { n: '濃醇', d: '火落ち菌が硬い', fx: { hioHp: 1.2 } } },
+  { name: '近畿', weapon: 'daito', gim: { n: '男酒', d: '米武将が硬い', fx: { bossHp: 1.2 } } },
+  { name: '中国', weapon: 'yari', gim: { n: '軟水', d: '発酵波が広がる（+15%）', fx: { wave: 1.15 } } },
+  { name: '四国', weapon: 'daito', gim: { n: '急流', d: '足が速くなる（+10%）', fx: { psp: 1.1 } } },
+  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' }, gim: { n: '豪快', d: '雑菌の大群が押し寄せる', fx: { spawn: 1.2 } } }, // 泥蔵で9号（香露・熊本）
 ];
+function gimFx() { // 風土の効果（名水仕込みは風土ごと無効化）
+  if (riceHas('meisui')) return {};
+  return REGIONS10[G.regionIdx].gim.fx;
+}
+function yeastCost() { return Math.round(YEASTS[META.yeast].cost * (gimFx().cost || 1)); }
+function gokuiHas(k) { return Array.isArray(META.gokui) && META.gokui.includes(k); }
 function regionName() { return REGIONS10[G.regionIdx].name; }
 // 難易度：敵スケールとドロップテーブル（EASY〜NIGHTMARE）が直結
 const DIFFS = [
@@ -331,7 +340,7 @@ cv.addEventListener('pointerdown', e => {
   if (G.mode === 'map') { mapTap(p); return; }
   if (G.mode === 'equip') { equipTap(p); return; }
   if (G.mode === 'battle') {
-    if (inBtn(p, FERMENT_BTN)) { if (G.glucose >= YEASTS[META.yeast].cost) ferment(); return; }
+    if (inBtn(p, FERMENT_BTN)) { if (G.glucose >= yeastCost()) ferment(); return; }
     if (p.x < W * 0.55) { stickId = e.pointerId; stickBase = p; stickCur = p; }
   }
 });
@@ -460,7 +469,7 @@ function kuraT() { return G.t - G.kuraStart; }
 
 function spawnEnemy(elite) {
   const a = Math.random() * Math.PI * 2;
-  const spd = 1 + 0.04 * (kuraLevel() - 1); // 進軍が深いほど機敏になる
+  const spd = (1 + 0.04 * (kuraLevel() - 1)) * (gimFx().esp || 1); // 進軍が深いほど機敏に。風土補正あり
   const e = {
     x: ARENA.x + Math.cos(a) * (ARENA.r - 12),
     y: ARENA.y + Math.sin(a) * (ARENA.r - 12),
@@ -484,8 +493,8 @@ function spawnHiochi() {
     kx: 0, ky: 0, wob: 0,
     hiochi: true, elite: false,
     r: 30,
-    hp: Math.round((350 + 80 * (kuraLevel() - 1)) * (G.node.mod.hiochiHp || 1)),
-    maxHp: Math.round((350 + 80 * (kuraLevel() - 1)) * (G.node.mod.hiochiHp || 1)),
+    hp: Math.round((350 + 80 * (kuraLevel() - 1)) * (G.node.mod.hiochiHp || 1) * (gimFx().hioHp || 1)),
+    maxHp: Math.round((350 + 80 * (kuraLevel() - 1)) * (G.node.mod.hiochiHp || 1) * (gimFx().hioHp || 1)),
     sp: 30, flash: 0, regenT: 0,
     regen: 7 + 2 * (kuraLevel() - 1),
   };
@@ -504,7 +513,7 @@ function spawnRiceBoss() {
   const a = Math.random() * Math.PI * 2;
   const lv = kuraLevel();
   const big = !!G.node.boss;
-  const hp = Math.round((500 + 120 * (lv - 1)) * (big ? 1.4 : 1));
+  const hp = Math.round((500 + 120 * (lv - 1)) * (big ? 1.4 : 1) * (gimFx().bossHp || 1));
   const b = {
     x: ARENA.x + Math.cos(a) * (ARENA.r - 50),
     y: ARENA.y + Math.sin(a) * (ARENA.r - 50),
@@ -565,22 +574,23 @@ function attack() {
   if (hit) {
     sfx('hit');
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
-    // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性で+15%）
-    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1), G.glucoseMax);
+    // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／糖化の技+10%／風土補正）
+    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
   }
 }
 
 function ferment() {
   const y = YEASTS[META.yeast];
-  G.glucose = Math.max(G.glucose - y.cost, 0);
+  G.glucose = Math.max(G.glucose - yeastCost(), 0);
   G.shake = 14;
   sfx('ferment');
   G.banner = { str: y.ult, color: y.color, t: 1.1 }; // 必殺技カットイン
   const tMul = riceHas('teion') ? 1.3 : 1;
   if (META.yeast === 'y7') { // 大発酵・アルコール爆発：三重の爆発輪＋金色フラッシュ
-    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275 });
-    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, delay: 0.12, deco: true });
-    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: 275, delay: 0.24, deco: true });
+    const wmax = 275 * (gimFx().wave || 1); // 中国・軟水：発酵波が広がる
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: wmax });
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: wmax, delay: 0.12, deco: true });
+    G.waves.push({ x: G.player.x, y: G.player.y, r: 10, max: wmax, delay: 0.24, deco: true });
     G.flash = { rgb: '255,215,110', t: 0.3, max: 0.3 };
     G.hitstop = 0.08;
     G.shake = 18;
@@ -672,15 +682,20 @@ function joso() {
     else { weaponChoice = true; G.wchoice = 0; }
   }
   // 地域制圧の特典＝杜氏の極意（技能系）。精米の技は難易度に紐付く（本仕込み以上→50%、寒仕込み以上→35%）
-  let polished = null;
+  const gokuiMsgs = [];
   if (G.node.boss) {
-    if (G.diff >= 1 && META.polish === 70) { META.polish = 50; polished = '精米の技　70%→50%（攻撃力+40%）'; }
-    else if (G.diff >= 2 && META.polish === 50) { META.polish = 35; polished = '精米の技　50%→35%（攻撃力+70%）'; }
+    if (G.diff >= 1 && META.polish === 70) { META.polish = 50; gokuiMsgs.push('精米の技　70%→50%（攻撃力+40%）'); }
+    else if (G.diff >= 2 && META.polish === 50) { META.polish = 35; gokuiMsgs.push('精米の技　50%→35%（攻撃力+70%）'); }
     if (!META.regionClear) META.regionClear = {};
     const rn = regionName();
     META.regionClear[rn] = Math.max(META.regionClear[rn] ?? -1, G.diff);
     if (G.kills > META.best) META.best = G.kills;
+    // 制圧地域数のマイルストーンで極意を会得
+    const clearedN = Object.keys(META.regionClear).length;
+    if (clearedN >= 3 && !gokuiHas('tou')) { META.gokui.push('tou'); gokuiMsgs.push('糖化の技（糖化+10%）'); }
+    if (clearedN >= 6 && !gokuiHas('kai')) { META.gokui.push('kai'); gokuiMsgs.push('回避の技（無敵時間+50%）'); }
   }
+  const polished = gokuiMsgs.length ? gokuiMsgs.join('／') : null;
   // 酵母の会得＝特定の地域・特定の蔵の浄化報酬（東北の寒蔵=6号／九州の泥蔵=9号）
   let yeastGained = null;
   const ny = nodeYeast(G.rank);
@@ -732,7 +747,7 @@ function update(dt) {
   const p = G.player;
 
   // 移動（五百万石=速度+10%）
-  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1);
+  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1) * (gimFx().psp || 1); // 四国・急流：足が速い
   let mx = 0, my = 0;
   if (keys.KeyW || keys.ArrowUp) my--;
   if (keys.KeyS || keys.ArrowDown) my++;
@@ -759,7 +774,7 @@ function update(dt) {
   // 攻撃
   p.atkCd -= dt;
   if ((keys.Space || G.touchUI) && p.atkCd <= 0) attack(); // タッチ時は自動で櫂を振る
-  if ((keys.KeyX || keys.Enter) && G.glucose >= YEASTS[META.yeast].cost) ferment();
+  if ((keys.KeyX || keys.Enter) && G.glucose >= yeastCost()) ferment();
   if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
   p.inv -= dt;
 
@@ -768,10 +783,10 @@ function update(dt) {
   if (G.spawnT <= 0) {
     const kt = kuraT();
     const lv = kuraLevel();
-    const rate = Math.max(0.55 - kt * 0.012, 0.10) / (1 + 0.15 * (lv - 1)) / nodeMod('spawn');
+    const rate = Math.max(0.55 - kt * 0.012, 0.10) / (1 + 0.15 * (lv - 1)) / nodeMod('spawn') / (gimFx().spawn || 1);
     G.spawnT = rate;
     const n = 1 + Math.floor(kt / 25) + Math.floor((lv - 1) / 2);
-    const eliteP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * nodeMod('elite');
+    const eliteP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * nodeMod('elite') * (gimFx().elite || 1);
     for (let i = 0; i < n; i++) spawnEnemy(Math.random() < eliteP);
   }
   // 火落ち菌乱入判定＋出現中のペナルティ（発酵度が減る）
@@ -802,13 +817,13 @@ function update(dt) {
     // プレイヤー接触（白麹：20%で弾く）
     if (d < e.r + 14 && p.inv <= 0) {
       if (kojiIs('white') && Math.random() < 0.2) {
-        p.inv = 0.5;
+        p.inv = gokuiHas('kai') ? 0.75 : 0.5;
         sfx('block');
         addText(p.x, p.y - 34, '白麹が弾いた！', '#d9e8ff', 14);
         e.kx += -(dx / d) * 300; e.ky += -(dy / d) * 300;
         continue;
       }
-      p.hp--; p.inv = 1.1; G.shake = 10;
+      p.hp--; p.inv = gokuiHas('kai') ? 1.65 : 1.1; G.shake = 10; // 回避の技：無敵時間+50%
       sfx('hurt');
       for (const o of G.enemies) {
         const ox = o.x - p.x, oy = o.y - p.y, od = Math.hypot(ox, oy) || 1;
@@ -1060,13 +1075,13 @@ function draw() {
   }
   cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('必殺：' + YEASTS[META.yeast].ult + '（' + YEASTS[META.yeast].short + '）', 74, H - 48);
-  if (G.glucose >= YEASTS[META.yeast].cost && Math.floor(G.t * 3) % 2) {
+  if (G.glucose >= yeastCost() && Math.floor(G.t * 3) % 2) {
     cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
     cx.fillText('Xで発酵！', 74, H - 30);
   }
   // 操作説明（タッチ時は仮想ボタン）
   if (G.touchUI) {
-    const ready = G.glucose >= YEASTS[META.yeast].cost;
+    const ready = G.glucose >= yeastCost();
     cx.textAlign = 'center'; cx.textBaseline = 'middle';
     cx.beginPath(); cx.arc(FERMENT_BTN.x, FERMENT_BTN.y, FERMENT_BTN.r, 0, 7);
     cx.fillStyle = ready ? 'rgba(255,215,110,0.85)' : 'rgba(120,100,60,0.35)';
@@ -1196,7 +1211,7 @@ function drawEquipUI(withYeast) {
   if (withYeast) lines.push('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）');
   lines.push(weaponText(META.weapon));
   lines.push(riceText(META.rice));
-  lines.push('精米 ' + META.polish + '%（攻' + weaponDmg() + '）');
+  lines.push('精米 ' + META.polish + '%（攻' + weaponDmg() + '）' + (META.gokui.length ? '　極意：' + META.gokui.map(k => k === 'tou' ? '糖化' : '回避').join('・') : ''));
   cx.font = '13px serif';
   const wMax = Math.max(...lines.map(s => cx.measureText(s).width));
   const pad = 10, lh = 18;
@@ -1371,10 +1386,12 @@ function drawWorld() {
     cx.fillStyle = sel ? '#ffd76e' : '#f2e9d4';
     cx.fillText(rg.name, mx, rc.y + 30);
     cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
-    cx.fillText('特産：' + WTYPES[rg.weapon].label, mx, rc.y + 58);
+    cx.fillText('特産：' + WTYPES[rg.weapon].label, mx, rc.y + 54);
+    cx.fillStyle = '#b8a26e';
+    cx.fillText('風土：' + rg.gim.n, mx, rc.y + 74);
     if (rg.yeast && !META.yeasts.includes(rg.yeast.y)) {
       cx.fillStyle = '#8ad9c8';
-      cx.fillText('酵母（' + YEASTS[rg.yeast.y].short + '）の気配', mx, rc.y + 80);
+      cx.fillText('酵母（' + YEASTS[rg.yeast.y].short + '）の気配', mx, rc.y + 94);
     }
     cx.font = '12px serif';
     if (clearedD !== undefined) {
@@ -1434,7 +1451,8 @@ function drawMap() {
   cx.fillStyle = '#f2e9d4'; cx.font = 'bold 32px serif';
   cx.fillText(regionName() + '地方 進軍図〔' + DIFFS[G.diff].name + '〕', W / 2, 60);
   cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
-  cx.fillText('特産武器：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '（火落ち菌の戦利品）　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
+  const gim = REGIONS10[G.regionIdx].gim;
+  cx.fillText('風土：' + gim.n + '（' + gim.d + '）　特産武器：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
   // 地方の総アルコールゲージ
   cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('地方制圧度（総アルコール）　' + Math.floor(G.regionGauge) + ' / 100', W / 2, 102);
