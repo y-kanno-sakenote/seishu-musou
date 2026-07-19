@@ -50,9 +50,9 @@ function weaponDmg() { return { 70: 10, 50: 14, 35: 17 }[META.polish] || 10; }
 // 酒米（防具）まわり
 const RARITY = [
   { label: '並',    color: '#c8bda0', slots: [0, 0] },
-  { label: '純米',  color: '#b8d98a', slots: [1, 1] },
-  { label: '吟醸',  color: '#8ad9c8', slots: [1, 2] },
-  { label: '大吟醸', color: '#ffd76e', slots: [2, 2] },
+  { label: '純米',  color: '#b8d98a', slots: [1, 2] },
+  { label: '吟醸',  color: '#8ad9c8', slots: [2, 3] },
+  { label: '大吟醸', color: '#ffd76e', slots: [4, 4] }, // 原案どおり4枠確定
 ];
 // レア度テーブル（数値層のEASY/NORMAL/HARD/NIGHTMAREを移植。tier=進軍の深さで決まる）
 const DROP_TABLE = [
@@ -64,6 +64,8 @@ const DROP_TABLE = [
 const SUBS = {
   amylase: { name: 'アミラーゼ活性', desc: '糖化+15%' },
   teion:   { name: '低温長期発酵',  desc: '発酵ダメ+30%' },
+  meisui:  { name: '名水仕込み',    desc: '環境無効' },     // 泥蔵・寒蔵の環境悪化を打ち消す
+  hiire:   { name: '火入れの極意',  desc: '対火落ち+50%' }, // 火落ち菌へのダメージ増
 };
 function rollDrop(tier) {
   const table = DROP_TABLE[Math.max(0, Math.min(tier, 3))];
@@ -78,6 +80,10 @@ function rollDrop(tier) {
   return { name, rarity, subs };
 }
 function riceHas(key) { return !!(META.rice && META.rice.subs && META.rice.subs[key]); }
+function riceText(r) {
+  if (!r) return '酒米なし';
+  return RARITY[r.rarity].label + '・' + r.name + Object.keys(r.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('');
+}
 
 // ---- 地方と進軍マップ ----
 const REGION_NAMES = ['近畿', '中部', '関東', '東北', '九州', '北海道'];
@@ -96,6 +102,10 @@ const RANKS = [
 ];
 const GAUGE_ADD = [30, 30, 40]; // 蔵制圧ごとの地方総アルコール上昇
 function kuraLevel() { return (G.regionIdx - 1) * 3 + G.rank + 1; } // 敵スケールの通し番手
+function nodeMod(key) { // 名水仕込み：泥蔵・寒蔵の環境悪化を無効化
+  if (riceHas('meisui')) return 1;
+  return (G.node && G.node.mod[key]) || 1;
+}
 
 // ---- 入力 ----
 const keys = {};
@@ -104,7 +114,14 @@ addEventListener('keydown', e => {
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   const ok = e.code === 'Space' || e.code === 'Enter';
   if (G.mode === 'over') { if (e.code === 'KeyR') restartRegion(); return; }
-  if (G.mode === 'result') { if (ok && G.resultT > 0.6) afterResult(); return; }
+  if (G.mode === 'result') {
+    if (G.result && G.result.needChoice && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code)) G.choice = 1 - G.choice;
+    if (ok && G.resultT > 0.6) {
+      if (G.result && G.result.needChoice && G.choice === 0) { META.rice = G.result.drop; saveMeta(); }
+      afterResult();
+    }
+    return;
+  }
   if (G.mode === 'regionclear') { if (ok && G.clearT > 0.8) nextRegion(); return; }
   if (G.mode === 'map') {
     const nodes = RANKS[G.rank];
@@ -223,7 +240,7 @@ function attack() {
     let da = Math.atan2(dy, dx) - p.face;
     da = Math.atan2(Math.sin(da), Math.cos(da));
     if (Math.abs(da) > SWEEP.arc / 2) continue;
-    e.hp -= dmg; e.flash = 0.12; hit++;
+    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const kb = e.hiochi ? 30 : e.elite ? 90 : 260;
     e.kx += Math.cos(p.face + da * 0.4) * kb;
@@ -275,10 +292,11 @@ function joso() {
   G.regionGauge = Math.min(G.regionGauge + GAUGE_ADD[G.rank], 100);
   // ドロップのレア度tier：進軍の深さ＋地方の番手で良くなる
   const drop = rollDrop(G.rank + G.regionIdx - 1);
-  // 装備更新判定：レア度が上なら着替える
+  // 装備は自動でなくプレイヤーが選ぶ（初回だけ自動装備）
   const cur = META.rice;
-  const equip = !cur || drop.rarity > cur.rarity;
-  if (equip) META.rice = drop;
+  const needChoice = !!cur;
+  if (!cur) META.rice = drop;
+  G.choice = needChoice && drop.rarity > cur.rarity ? 0 : 1; // レア度が上なら「着る」を初期選択
   // 精米イベント：地方1・地方2の総本山制圧で研ぎが進む
   let polished = null;
   if (G.node.boss) {
@@ -287,7 +305,7 @@ function joso() {
     META.bestRegion = Math.max(META.bestRegion, G.regionIdx + 1);
   }
   saveMeta();
-  G.result = { drop, equip, polished };
+  G.result = { drop, needChoice, polished };
 }
 
 function afterResult() { // 上槽リザルトを閉じたあとの行き先
@@ -342,10 +360,10 @@ function update(dt) {
   if (G.spawnT <= 0) {
     const kt = kuraT();
     const lv = kuraLevel();
-    const rate = Math.max(0.55 - kt * 0.012, 0.10) / (1 + 0.15 * (lv - 1)) / (G.node.mod.spawn || 1);
+    const rate = Math.max(0.55 - kt * 0.012, 0.10) / (1 + 0.15 * (lv - 1)) / nodeMod('spawn');
     G.spawnT = rate;
     const n = 1 + Math.floor(kt / 25) + Math.floor((lv - 1) / 2);
-    const eliteP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * (G.node.mod.elite || 1);
+    const eliteP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * nodeMod('elite');
     for (let i = 0; i < n; i++) spawnEnemy(Math.random() < eliteP);
   }
   // 火落ち菌乱入判定＋出現中のペナルティ（発酵度が減る）
@@ -391,7 +409,7 @@ function update(dt) {
       if (e.hiochi) { // 火落ち菌は即死せず大ダメージのみ（1波につき1回、低温長期発酵で+30%）
         if (e.hitBy !== w) {
           e.hitBy = w;
-          e.hp -= Math.round(120 * (riceHas('teion') ? 1.3 : 1));
+          e.hp -= Math.round(120 * (riceHas('teion') ? 1.3 : 1) * (riceHas('hiire') ? 1.5 : 1));
           e.flash = 0.2;
           if (e.hp <= 0) kill(e, j);
         }
@@ -549,10 +567,7 @@ function draw() {
   cx.textBaseline = 'bottom';
   cx.font = '13px serif';
   cx.fillStyle = '#9a8c72';
-  const riceLabel = META.rice
-    ? RARITY[META.rice.rarity].label + '・' + META.rice.name + Object.keys(META.rice.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('')
-    : '酒米なし';
-  cx.fillText(riceLabel, W - 20, H - 26);
+  cx.fillText(riceText(META.rice), W - 20, H - 26);
   cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
   // コンボ
   if (G.combo >= 5) {
@@ -608,15 +623,30 @@ function draw() {
     cx.font = '17px serif';
     cx.fillStyle = '#c8bda0';
     cx.fillText(subKeys.length ? subKeys.map(k => SUBS[k].name + '（' + SUBS[k].desc + '）').join('　') : 'サブスキルなし', W / 2, H / 2 - 4);
-    cx.fillStyle = G.result.equip ? '#b8d98a' : '#9a8c72';
-    cx.fillText(G.result.equip ? '装備を更新した！' : '手持ちの酒米の方が上等だった', W / 2, H / 2 + 30);
+    if (G.result.needChoice) {
+      const opts = [
+        { label: '新しい酒米を着る', rice: d },
+        { label: '今の酒米でいく　', rice: META.rice },
+      ];
+      cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+      cx.fillText('←→で選択', W / 2, H / 2 + 26);
+      opts.forEach((o, i) => {
+        const sel = G.choice === i;
+        cx.font = (sel ? 'bold ' : '') + '16px serif';
+        cx.fillStyle = sel ? '#ffd76e' : '#8a7c62';
+        cx.fillText((sel ? '▶ ' : '　 ') + o.label + '：' + riceText(o.rice), W / 2, H / 2 + 52 + i * 28);
+      });
+    } else {
+      cx.fillStyle = '#b8d98a';
+      cx.fillText('はじめての酒米。装備した！', W / 2, H / 2 + 40);
+    }
     if (G.result.polished) {
-      cx.fillStyle = '#ffd76e';
-      cx.fillText('精米イベント：大刀を研いだ　' + G.result.polished, W / 2, H / 2 + 62);
+      cx.fillStyle = '#ffd76e'; cx.font = '17px serif';
+      cx.fillText('精米イベント：大刀を研いだ　' + G.result.polished, W / 2, H / 2 + 128);
     }
     if (G.resultT > 0.6 && Math.floor(G.t * 2) % 2 === 0) {
       cx.font = '17px serif'; cx.fillStyle = '#9a8c72';
-      cx.fillText(G.node.boss ? 'Space で地方制圧の儀へ' : 'Space で進軍図に戻る', W / 2, H / 2 + 110);
+      cx.fillText(G.node.boss ? 'Space で地方制圧の儀へ' : 'Space で進軍図に戻る', W / 2, H / 2 + 162);
     }
   }
 
@@ -695,10 +725,7 @@ function drawMap() {
   // 装備と操作
   cx.textAlign = 'right'; cx.textBaseline = 'bottom';
   cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
-  const riceLabel = META.rice
-    ? RARITY[META.rice.rarity].label + '・' + META.rice.name + Object.keys(META.rice.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('')
-    : '酒米なし';
-  cx.fillText(riceLabel, W - 20, H - 26);
+  cx.fillText(riceText(META.rice), W - 20, H - 26);
   cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
   cx.textAlign = 'center';
   cx.fillStyle = '#6a5c48';

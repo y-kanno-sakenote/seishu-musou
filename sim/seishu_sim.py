@@ -40,13 +40,15 @@ class Rarity(Enum):
     REGULAR = 0    # サブスキル0枠
     JUNMAI = 1     # 1-2枠
     GINJO = 2      # 2-3枠
-    DAIGINJO = 3   # 4枠確定（初版はテーブル2種のため実質2枠。拡張時に4種へ）
+    DAIGINJO = 3   # 4枠確定（テーブル4種で原案どおり）
 
 
-# サブスキル（初版は2種のみ。2026-07-19決定）
+# サブスキル（2026-07-19に4種へ拡張。原案テーブル完備）
 SUB_SKILLS = [
-    {"name": "低温長期発酵", "effect": "YEAST_DAMAGE_UP"},   # 酵母技ダメージ+30%
-    {"name": "アミラーゼ活性", "effect": "GLUCOSE_BOOST"},   # ブドウ糖獲得+15%
+    {"name": "低温長期発酵", "effect": "YEAST_DAMAGE_UP"},    # 酵母技ダメージ+30%
+    {"name": "アミラーゼ活性", "effect": "GLUCOSE_BOOST"},    # ブドウ糖獲得+15%
+    {"name": "名水仕込み", "effect": "ANTI_DEBUFF"},          # 環境デバフ無効（tickモデル外。手触り層では泥蔵・寒蔵の環境悪化を無効化）
+    {"name": "火入れの極意", "effect": "VS_BOSS_DAMAGE_UP"},  # ボス・火落ち菌へのダメージ+50%
 ]
 
 
@@ -141,6 +143,7 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
     crit_dmg = tn.crit_dmg
     sweep = int(tn.sweep_targets * (1.5 if weapon.style == Style.BOX else 1.0))
     yeast_mult = 1.30 if rice.has("YEAST_DAMAGE_UP") else 1.0
+    boss_mult = 1.50 if rice.has("VS_BOSS_DAMAGE_UP") else 1.0  # 火入れの極意：ボス・火落ち菌のみ
     glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0)
     incoming_cut = 0.20 if weapon.koji == Koji.WHITE else 0.0
 
@@ -171,11 +174,11 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
         minions -= kill
         primary = "hiochi" if hiochi is not None else "boss"
         if primary == "hiochi":
-            d = vs_def(base, 0)
+            d = vs_def(base, 0) * boss_mult
             hiochi -= d
             dealt += d
         else:
-            d = vs_def(base, tn.boss_def)
+            d = vs_def(base, tn.boss_def) * boss_mult
             boss -= d
             dealt += d
         glucose = min(glucose + dealt * glucose_rate, 100.0)
@@ -190,11 +193,11 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
                 burst = atk * (yeast.power or 5.0) * yeast_mult  # 全体500%
                 minions = 0
                 if hiochi is not None:
-                    hiochi -= vs_def(burst, 0)
+                    hiochi -= vs_def(burst, 0) * boss_mult
                 else:
-                    boss -= vs_def(burst, tn.boss_def)
+                    boss -= vs_def(burst, tn.boss_def) * boss_mult
             elif yeast.name == "きょうかい9号":
-                burst = atk * (yeast.power or 10.0) * yeast_mult  # 単体1000%防御無視
+                burst = atk * (yeast.power or 10.0) * yeast_mult * boss_mult  # 単体1000%防御無視
                 if hiochi is not None:
                     hiochi -= burst
                 else:
@@ -347,8 +350,8 @@ def main():
     tn = Tuning(glucose_rate=0.02)
     for label, rice in (
         ("素の五百万石(REGULAR)", Rice()),
-        ("大吟醸・五百万石(サブ2種)", Rice(rarity=Rarity.DAIGINJO, sub_skills=list(SUB_SKILLS))),
-        ("大吟醸・山田錦(サブ2種)", Rice(name="山田錦の魂", rarity=Rarity.DAIGINJO, sub_skills=list(SUB_SKILLS))),
+        ("大吟醸・五百万石(サブ4種)", Rice(rarity=Rarity.DAIGINJO, sub_skills=list(SUB_SKILLS))),
+        ("大吟醸・山田錦(サブ4種)", Rice(name="山田錦の魂", rarity=Rarity.DAIGINJO, sub_skills=list(SUB_SKILLS))),
     ):
         wins = ticks = 0
         for _ in range(1000):
