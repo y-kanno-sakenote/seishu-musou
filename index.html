@@ -147,6 +147,7 @@ addEventListener('keydown', e => {
   keys[e.code] = true;
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   const ok = e.code === 'Space' || e.code === 'Enter';
+  if (G.mode === 'title') { if (ok) G.mode = 'map'; return; }
   if (e.code === 'KeyC' && META.yeasts.length > 1) { // 酵母切替はどの画面でも
     META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length];
     saveMeta();
@@ -228,6 +229,7 @@ function startKura(node) {
   addText(ARENA.x, ARENA.y - 150, regionName() + '・' + node.name, '#f2e9d4', 30);
 }
 newRun();
+G.mode = 'title'; // 起動時はタイトル画面から（死後のRは直接マップに戻る）
 
 // ---- 敵 ----
 function kuraT() { return G.t - G.kuraStart; }
@@ -579,6 +581,7 @@ function update(dt) {
 
 // ---- 描画 ----
 function draw() {
+  if (G.mode === 'title') { drawTitle(); return; }
   if (G.mode === 'map') { drawMap(); return; }
   if (G.mode === 'regionclear') { drawRegionClear(); return; }
   cx.save();
@@ -724,13 +727,8 @@ function draw() {
   cx.font = '13px serif';
   cx.fillStyle = '#9a8c72';
   cx.fillText('最高 ' + META.best + ' 斬 ／ 最深 第' + META.bestRegion + '地方', W - 20, 48);
-  // 装備（右下）
-  cx.textBaseline = 'bottom';
-  cx.font = '13px serif';
-  cx.fillStyle = '#9a8c72';
-  cx.fillText(weaponText(META.weapon), W - 20, H - 44);
-  cx.fillText(riceText(META.rice), W - 20, H - 26);
-  cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
+  // 装備（右下パネル）
+  drawEquipUI(false);
   // コンボ
   if (G.combo >= 5) {
     cx.textAlign = 'center'; cx.textBaseline = 'top';
@@ -874,6 +872,84 @@ function draw() {
   }
 }
 
+// ---- 共通UI：装備パネル（右下・半透明の板にまとめる）----
+function drawEquipUI(withYeast) {
+  const lines = [];
+  if (withYeast) lines.push('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）');
+  lines.push(weaponText(META.weapon));
+  lines.push(riceText(META.rice));
+  lines.push('精米 ' + META.polish + '%（攻' + weaponDmg() + '）');
+  cx.font = '13px serif';
+  const wMax = Math.max(...lines.map(s => cx.measureText(s).width));
+  const pad = 10, lh = 18;
+  const bw = wMax + pad * 2, bh = lines.length * lh + pad * 2 - 4;
+  const bx = W - 14 - bw, by = H - 14 - bh;
+  cx.fillStyle = 'rgba(20,12,8,0.55)';
+  cx.beginPath();
+  if (cx.roundRect) cx.roundRect(bx, by, bw, bh, 8); else cx.rect(bx, by, bw, bh);
+  cx.fill();
+  cx.textAlign = 'right'; cx.textBaseline = 'top';
+  cx.fillStyle = '#9a8c72';
+  lines.forEach((s, i) => cx.fillText(s, W - 14 - pad, by + pad + i * lh - 2));
+}
+
+// ---- タイトル画面 ----
+function drawTitle() {
+  cx.fillStyle = '#1e1710'; cx.fillRect(0, 0, W, H);
+  // 背景のタンク（うっすら）
+  cx.save();
+  cx.globalAlpha = 0.45;
+  cx.beginPath(); cx.arc(W / 2, H / 2 + 40, 250, 0, 7);
+  cx.fillStyle = '#3a2e24'; cx.fill();
+  const grad = cx.createRadialGradient(W / 2, H / 2 - 20, 40, W / 2, H / 2 + 40, 240);
+  grad.addColorStop(0, '#f2e9d4'); grad.addColorStop(1, '#ddceac');
+  cx.beginPath(); cx.arc(W / 2, H / 2 + 40, 238, 0, 7);
+  cx.fillStyle = grad; cx.fill();
+  // 漂う雑菌と泡
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  for (let i = 0; i < 10; i++) {
+    const a = i * 0.63 + G.t * 0.1, rr = 90 + (i * 37) % 140;
+    const ex = W / 2 + Math.cos(a) * rr, ey = H / 2 + 40 + Math.sin(a) * rr * 0.8;
+    cx.font = (14 + (i % 3) * 6) + 'px serif';
+    cx.fillText('🦠', ex, ey);
+  }
+  cx.restore();
+  // 麹坊やと櫂棒
+  const bob = Math.sin(G.t * 2.5) * 5;
+  cx.beginPath(); cx.arc(W / 2, H / 2 + 46 + bob, 24, 0, 7);
+  cx.fillStyle = '#fffdf5'; cx.fill();
+  cx.lineWidth = 3; cx.strokeStyle = '#8a7a55'; cx.stroke();
+  cx.fillStyle = '#4a3b22'; cx.font = 'bold 22px serif';
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillText('麹', W / 2, H / 2 + 47 + bob);
+  cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
+  cx.beginPath();
+  cx.moveTo(W / 2 + 24, H / 2 + 40 + bob);
+  cx.lineTo(W / 2 + 86, H / 2 - 26 + bob);
+  cx.stroke();
+  // タイトル
+  cx.fillStyle = 'rgba(20,12,8,0.35)'; cx.fillRect(0, H * 0.16, W, 120);
+  cx.font = 'bold 76px serif';
+  cx.fillStyle = '#ffd76e';
+  cx.fillText('もろみ無双', W / 2, H * 0.16 + 58);
+  cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
+  cx.fillText('― 清酒無双 プロトタイプ ―', W / 2, H * 0.16 + 104);
+  // 世界観と記録
+  cx.font = '15px serif'; cx.fillStyle = '#c8bda0';
+  cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, H - 150);
+  if (META.best > 0 || META.bestRegion > 1) {
+    cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
+    cx.fillText('最高 ' + META.best + ' 斬 ／ 最深 第' + META.bestRegion + '地方　（装備と極意は持ち越し）', W / 2, H - 126);
+  }
+  // 開始と操作
+  if (Math.floor(G.t * 2) % 2 === 0) {
+    cx.font = 'bold 22px serif'; cx.fillStyle = '#f2e9d4';
+    cx.fillText('Space で仕込み開始', W / 2, H - 86);
+  }
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
+  cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ（糖化）　X: 発酵　C: 酵母切替　R: 再仕込み', W / 2, H - 40);
+}
+
 // ---- 進軍マップ描画 ----
 function nodePos(r, i, count) {
   const xs = [W / 2 - 270, W / 2, W / 2 + 270];
@@ -933,14 +1009,10 @@ function drawMap() {
   cx.lineWidth = 2; cx.strokeStyle = '#8a7a55'; cx.stroke();
   cx.fillStyle = '#4a3b22'; cx.font = 'bold 13px serif';
   cx.fillText('麹', sp.x, py + 1);
-  // 装備と操作
-  cx.textAlign = 'right'; cx.textBaseline = 'bottom';
-  cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
-  cx.fillText('酵母：' + META.yeasts.map(k => YEASTS[k].short).join('・') + '（' + YEASTS[META.yeast].short + '装備' + (META.yeasts.length > 1 ? '・C切替' : '') + '）', W - 20, H - 62);
-  cx.fillText(weaponText(META.weapon), W - 20, H - 44);
-  cx.fillText(riceText(META.rice), W - 20, H - 26);
-  cx.fillText('精米 ' + META.polish + '%（攻' + weaponDmg() + '）', W - 20, H - 8);
-  cx.textAlign = 'center';
+  // 装備（右下パネル）と操作
+  drawEquipUI(true);
+  cx.textAlign = 'center'; cx.textBaseline = 'bottom';
+  cx.font = '13px serif';
   cx.fillStyle = '#6a5c48';
   cx.fillText(RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍', W / 2, H - 8);
 }
