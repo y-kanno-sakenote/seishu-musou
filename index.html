@@ -129,8 +129,8 @@ function regionName() {
 const RANKS = [
   [{ name: '先鋒の蔵', desc: '標準の仕込み', mod: {} }],
   [
-    { name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦' },
-    { name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石' },
+    { name: '泥蔵', desc: '野生酵母が多い・山田錦が眠る', mod: { elite: 2.5 }, rice: '山田錦の魂', bossName: '洗脳された山田錦', yeast: 'y9' },
+    { name: '寒蔵', desc: '湧きが激しい・五百万石が眠る', mod: { spawn: 1.35 }, rice: '五百万石の魂', bossName: '洗脳された五百万石', yeast: 'y6' },
   ],
   [{ name: '総本山・山田錦の巨大蔵', desc: '火落ち菌が強大', mod: { hiochiHp: 1.6 }, boss: true, rice: '山田錦の魂', bossName: '大将・洗脳された山田錦' }],
 ];
@@ -195,7 +195,7 @@ const G = {
   riceBoss: null, riceBossDone: false, // 洗脳された米武将（浄化するまで上槽できない）
   pendingWeapon: null, wchoice: 0, // 火落ち菌の戦利品（麹武器）と上槽での選択
   result: null, resultT: 0,
-  freezeT: 0, beam: null, newYeast: null, // 6号の凍結／9号のビーム演出／会得告知
+  freezeT: 0, beam: null, // 6号の凍結／9号のビーム演出
 };
 window.G = G; // デバッグ用
 
@@ -422,18 +422,21 @@ function joso() {
     else { weaponChoice = true; G.wchoice = 0; }
   }
   // 精米イベント：地方1・地方2の総本山制圧で研ぎが進む
+  // 地方制圧の特典＝杜氏の極意（技能系）。精米の技はその第一
   let polished = null;
-  G.newYeast = null;
   if (G.node.boss) {
-    if (G.regionIdx === 1 && META.polish === 70) { META.polish = 50; polished = '70%→50%（攻撃力+40%）'; }
-    if (G.regionIdx === 2 && META.polish === 50) { META.polish = 35; polished = '50%→35%（攻撃力+70%）'; }
-    // 酵母の会得：地方1→9号、地方2→6号
-    if (G.regionIdx === 1 && !META.yeasts.includes('y9')) { META.yeasts.push('y9'); G.newYeast = 'y9'; }
-    else if (G.regionIdx === 2 && !META.yeasts.includes('y6')) { META.yeasts.push('y6'); G.newYeast = 'y6'; }
+    if (G.regionIdx === 1 && META.polish === 70) { META.polish = 50; polished = '精米の技　70%→50%（攻撃力+40%）'; }
+    if (G.regionIdx === 2 && META.polish === 50) { META.polish = 35; polished = '精米の技　50%→35%（攻撃力+70%）'; }
     META.bestRegion = Math.max(META.bestRegion, G.regionIdx + 1);
   }
+  // 酵母の会得＝特定の蔵の浄化報酬（泥蔵=9号／寒蔵=6号）
+  let yeastGained = null;
+  if (G.node.yeast && !META.yeasts.includes(G.node.yeast)) {
+    META.yeasts.push(G.node.yeast);
+    yeastGained = G.node.yeast;
+  }
   saveMeta();
-  G.result = { drop, needChoice, polished, weaponDrop, weaponAuto, weaponChoice, weaponDone: false };
+  G.result = { drop, needChoice, polished, yeastGained, weaponDrop, weaponAuto, weaponChoice, weaponDone: false };
 }
 
 function afterResult() { // 上槽リザルトを閉じたあとの行き先
@@ -820,6 +823,11 @@ function draw() {
       cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
       cx.fillText('はじめての麹武器：' + weaponText(META.weapon) + ' を装備！', W / 2, H / 2 + 104);
     }
+    if (G.result.yeastGained) {
+      const y = YEASTS[G.result.yeastGained];
+      cx.font = 'bold 17px serif'; cx.fillStyle = '#8ad9c8';
+      cx.fillText('新酵母を会得：' + y.name + '（' + y.desc + '）　Cキーで切替', W / 2, H / 2 + 128);
+    }
     if (G.result.needChoice) {
       const opts = [
         { label: '新しい酒米を着る', rice: d },
@@ -839,7 +847,7 @@ function draw() {
     }
     if (G.result.polished) {
       cx.fillStyle = '#ffd76e'; cx.font = '17px serif';
-      cx.fillText('精米イベント：大刀を研いだ　' + G.result.polished, W / 2, H / 2 + 128);
+      cx.fillText('杜氏の極意を授かった：' + G.result.polished, W / 2, H / 2 + 128);
     }
     if (G.resultT > 0.6 && Math.floor(G.t * 2) % 2 === 0) {
       cx.font = '17px serif'; cx.fillStyle = '#9a8c72';
@@ -911,6 +919,10 @@ function drawMap() {
       cx.fillText(nd.name, p.x, p.y + (nd.boss ? 62 : 54));
       cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
       cx.fillText(cleared ? '制圧済み' : nd.desc, p.x, p.y + (nd.boss ? 80 : 72));
+      if (!cleared && nd.yeast && !META.yeasts.includes(nd.yeast)) {
+        cx.fillStyle = '#8ad9c8';
+        cx.fillText('未会得の酵母（' + YEASTS[nd.yeast].short + '）の気配', p.x, p.y + 88);
+      }
     }
   // 麹坊や（現在の進軍先の上でぴょこぴょこ）
   const sp = nodePos(G.rank, G.selIdx, RANKS[G.rank].length);
@@ -943,11 +955,6 @@ function drawRegionClear() {
   cx.fillText('総アルコール 100 ／ ここまで ' + G.kills + ' 斬', W / 2, H / 2 - 10);
   cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('次の地方は敵が強くなり、酒米のドロップも上等になる', W / 2, H / 2 + 30);
-  if (G.newYeast) {
-    const y = YEASTS[G.newYeast];
-    cx.font = 'bold 20px serif'; cx.fillStyle = '#8ad9c8';
-    cx.fillText('新酵母を会得：' + y.name + '（' + y.desc + '）　Cキーで切替', W / 2, H / 2 + 118);
-  }
   if (G.clearT > 0.8 && Math.floor(G.t * 2) % 2 === 0) {
     cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
     cx.fillText('Space で ' + REGION_NAMES[G.regionIdx % REGION_NAMES.length] + '地方へ進軍', W / 2, H / 2 + 84);
