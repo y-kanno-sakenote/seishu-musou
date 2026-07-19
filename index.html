@@ -235,6 +235,8 @@ const REGIONS10 = [
   { name: '九州', weapon: 'yari', rice: '山田錦の魂', yeast: { stage: 1, y: 'y9' }, gim: { n: '豪快', d: '雑菌の大群が押し寄せる', fx: { spawn: 1.2 } } }, // 泥蔵で9号（香露・熊本）
 ];
 function regionRice() { return REGIONS10[G.regionIdx].rice; }
+// 鬼仕込みはその地域を寒仕込みで制圧するまで施錠（初見事故の防止・1801への二段の達成感）
+function diffLocked(i) { return i === 3 && ((META.regionClear || {})[REGIONS10[G.worldSel].name] ?? -1) < 2; }
 function bossNameFor(node) { return (node.boss ? '大将・' : '') + '洗脳された' + regionRice().replace('の魂', ''); }
 function gimFx() { // 風土の効果（名水仕込みは風土ごと無効化）
   if (riceHas('meisui')) return {};
@@ -283,14 +285,14 @@ addEventListener('keydown', e => {
     if (['ArrowRight','KeyD'].includes(e.code)) G.worldSel = (G.worldSel + 1) % 10;
     if (['ArrowUp','KeyW','ArrowDown','KeyS'].includes(e.code)) G.worldSel = (G.worldSel + 5) % 10;
     if (e.code === 'KeyE') { G.mode = 'equip'; G.eqBack = 'world'; G.eqCol = 0; G.eqIdx = 0; return; }
-    if (ok) { G.mode = 'diffsel'; G.diffSel = G.diff; }
+    if (ok) { G.mode = 'diffsel'; G.diffSel = diffLocked(G.diff) ? 2 : G.diff; }
     return;
   }
   if (G.mode === 'diffsel') {
     if (['ArrowUp','KeyW'].includes(e.code)) G.diffSel = (G.diffSel + 3) % 4;
     if (['ArrowDown','KeyS'].includes(e.code)) G.diffSel = (G.diffSel + 1) % 4;
     if (e.code === 'Escape' || e.code === 'KeyE') { G.mode = 'world'; return; }
-    if (ok) enterRegion(G.worldSel, G.diffSel);
+    if (ok && !diffLocked(G.diffSel)) enterRegion(G.worldSel, G.diffSel);
     return;
   }
   if (e.code === 'KeyC' && META.yeasts.length > 1 && G.mode !== 'battle') { // 酵母切替は戦闘外のみ
@@ -387,7 +389,7 @@ function worldTap(p) {
   for (let i = 0; i < 10; i++) {
     const rc = worldCardRect(i);
     if (p.x > rc.x && p.x < rc.x + rc.w && p.y > rc.y && p.y < rc.y + rc.h) {
-      if (G.worldSel === i) { G.mode = 'diffsel'; G.diffSel = G.diff; } // 選択中の地域をもう一度タップで難易度選択
+      if (G.worldSel === i) { G.mode = 'diffsel'; G.diffSel = diffLocked(G.diff) ? 2 : G.diff; } // 選択中の地域をもう一度タップで難易度選択
       else G.worldSel = i;
       return;
     }
@@ -398,7 +400,7 @@ function diffTap(p) {
   if (!inPanel) { G.mode = 'world'; return; } // パネル外タップで戻る
   for (let i = 0; i < 4; i++) {
     if (Math.abs(p.y - diffRowY(i)) < 24) {
-      if (G.diffSel === i) enterRegion(G.worldSel, i); // 選択中の難易度をもう一度タップで進軍
+      if (G.diffSel === i) { if (!diffLocked(i)) enterRegion(G.worldSel, i); } // 選択中の難易度をもう一度タップで進軍（施錠中は不可）
       else G.diffSel = i;
       return;
     }
@@ -1466,14 +1468,15 @@ function drawDiffsel() {
   const clearedD = (META.regionClear || {})[REGIONS10[G.worldSel].name];
   for (let i = 0; i < 4; i++) {
     const sel = i === G.diffSel;
+    const locked = diffLocked(i);
     const y = diffRowY(i);
     cx.font = (sel ? 'bold ' : '') + '19px serif';
-    cx.fillStyle = sel ? '#ffd76e' : '#c8bda0';
-    const mark = clearedD !== undefined && clearedD >= i ? '🍶' : '　';
+    cx.fillStyle = locked ? (sel ? '#8a6c58' : '#5a4c40') : sel ? '#ffd76e' : '#c8bda0';
+    const mark = locked ? '🔒' : (clearedD !== undefined && clearedD >= i ? '🍶' : '　');
     cx.fillText((sel ? '▶ ' : '　 ') + DIFFS[i].name + ' ' + mark, W / 2 - 120, y);
-    cx.font = '13px serif'; cx.fillStyle = sel ? '#c8bda0' : '#8a7c62';
+    cx.font = '13px serif'; cx.fillStyle = locked ? '#6a5c48' : sel ? '#c8bda0' : '#8a7c62';
     cx.textAlign = 'left';
-    cx.fillText(DIFFS[i].desc, W / 2 - 40, y);
+    cx.fillText(locked ? 'この地域を寒仕込みで制圧すると解禁' : DIFFS[i].desc, W / 2 - 40, y);
     cx.textAlign = 'center';
   }
   cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
