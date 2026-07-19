@@ -201,17 +201,18 @@ function sfx(type) {
 // ---- 10地域・難易度・進軍マップ（2026-07-19 選択制に再構成）----
 // 酵母は実在の系譜でピンポイント配置：6号=東北（新政・秋田）／9号=九州（香露・熊本）
 // 武器種は地域の特産：火落ち菌の戦利品がその地域の武器種で固定
+// 地域区分はかもしてぽん（tank5のPREFECTURES）と同一：北海道/東北/関東/甲信/北陸/東海/近畿/中国/四国/九州
 const REGIONS10 = [
   { name: '北海道', weapon: 'daito' },
-  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' } }, // 寒蔵で6号
+  { name: '東北', weapon: 'daito', yeast: { stage: 2, y: 'y6' } }, // 寒蔵で6号（新政・秋田）
   { name: '関東', weapon: 'soken' },
+  { name: '甲信', weapon: 'soken' },
   { name: '北陸', weapon: 'yari' },
-  { name: '中部', weapon: 'soken' },
+  { name: '東海', weapon: 'soken' },
   { name: '近畿', weapon: 'daito' },
   { name: '中国', weapon: 'yari' },
-  { name: '四国', weapon: 'soken' },
-  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' } }, // 泥蔵で9号
-  { name: '沖縄', weapon: 'daito' },
+  { name: '四国', weapon: 'daito' },
+  { name: '九州', weapon: 'yari', yeast: { stage: 1, y: 'y9' } }, // 泥蔵で9号（香露・熊本）
 ];
 function regionName() { return REGIONS10[G.regionIdx].name; }
 // 難易度：敵スケールとドロップテーブル（EASY〜NIGHTMARE）が直結
@@ -403,8 +404,8 @@ const G = {
   t: 0, mode: 'map', shake: 0, touchUI: false,
   kills: 0, combo: 0, comboT: 0,
   glucose: 0, glucoseMax: 60, // 糖化ゲージ（ヒット1につき+1）
-  regionIdx: 5, diff: 1, rank: 0, regionGauge: 0, node: null, selIdx: 0, mapT: 0, clearT: 0,
-  worldSel: 5, diffSel: 1, // ワールドマップと難易度選択のカーソル
+  regionIdx: 6, diff: 1, rank: 0, regionGauge: 0, node: null, selIdx: 0, mapT: 0, clearT: 0, // 初期カーソルは近畿
+  worldSel: 6, diffSel: 1, // ワールドマップと難易度選択のカーソル
   eqCol: 0, eqIdx: 0, eqBack: 'world', // 装備画面のカーソルと戻り先
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [],
