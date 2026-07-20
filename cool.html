@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>清酒無双（POP試作）</title>
+<title>清酒無双（クール試作）</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍶</text></svg>">
 <meta name="description" content="日本酒の醸造工程がそのままゲームシステムに。櫂棒で雑菌の大群をなぎ倒し、糖化→発酵の必殺技で蔵を浄化する醸造ハクスラ無双。">
 <meta property="og:title" content="清酒無双">
@@ -12,9 +12,9 @@
 <meta property="og:url" content="https://y-kanno-sakenote.github.io/seishu-musou/">
 <meta name="twitter:card" content="summary">
 <style>
-  html, body { margin: 0; padding: 0; background: #2b2140; overflow: hidden; height: 100%; }
+  html, body { margin: 0; padding: 0; background: #0b0908; overflow: hidden; height: 100%; }
   body { display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; background: #2b2140; touch-action: none; }
+  canvas { display: block; background: #0b0908; touch-action: none; }
 </style>
 </head>
 <body>
@@ -449,6 +449,7 @@ const G = {
   buffT: 0, // 1801「華やぎ」の残り時間
   camX: W / 2, camY: H / 2, // プレイヤー追従カメラ
   obstacles: [], // 蒸米の島（円形の障害物）
+  slashes: [], // 撃破の斬撃線エフェクト
 };
 window.G = G; // デバッグ用
 
@@ -477,7 +478,7 @@ function startKura(node) {
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.hiochi = null; G.alarm = 0;
   G.freezeT = 0; G.beam = null;
-  G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0;
+  G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0; G.slashes = [];
   G.riceBoss = null; G.riceBossDone = false;
   G.pendingWeapon = null;
   const hp = G.player ? Math.min(G.player.hp + 1, playerMaxHp()) : playerMaxHp(); // 蔵を越えると一杯回復（雄町は上限6）
@@ -710,6 +711,7 @@ function addText(x, y, str, col, size) {
 function kill(e, i) {
   G.enemies.splice(i, 1);
   sfx('kill');
+  G.slashes.push({ x: e.x, y: e.y, a: Math.random() * Math.PI, t: 0.18 }); // 斬撃線
   G.kills++;
   G.combo++; G.comboT = 1.3;
   for (let k = 0; k < ((e.hiochi || e.riceBoss) ? 40 : e.elite ? 14 : 6); k++) {
@@ -959,111 +961,21 @@ function update(dt) {
     t.t -= dt; t.y -= 26 * dt;
     if (t.t <= 0) G.texts.splice(i, 1);
   }
+  for (let i = G.slashes.length - 1; i >= 0; i--) {
+    G.slashes[i].t -= dt;
+    if (G.slashes[i].t <= 0) G.slashes.splice(i, 1);
+  }
 }
 
-// ---- POP試作：手描きベクターのちびキャラ（全キャラ同一タッチ・太アウトライン・接地影）----
-function popShadow(x, y, r) {
-  cx.beginPath();
-  cx.ellipse(x, y + r * 0.85, r * 0.75, r * 0.28, 0, 0, 7);
-  cx.fillStyle = 'rgba(90,50,60,0.18)';
-  cx.fill();
-}
-function popBlob(x, y, r, fill, line, spiky) {
-  cx.beginPath();
-  const n = 16;
-  for (let i = 0; i <= n; i++) {
-    const a = i / n * Math.PI * 2;
-    const rr = r * (1 + (spiky ? 0.13 * Math.sin(a * 8) : 0.06 * Math.sin(a * 3 + r)));
-    const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
-    i === 0 ? cx.moveTo(px, py) : cx.lineTo(px, py);
-  }
-  cx.closePath();
-  cx.fillStyle = fill; cx.fill();
-  cx.lineWidth = Math.max(2.5, r * 0.13); cx.lineJoin = 'round';
-  cx.strokeStyle = line; cx.stroke();
-}
-function popEyes(x, y, r, angry) {
-  const ex = r * 0.38, ey = -r * 0.12;
-  for (const s of [-1, 1]) {
-    cx.beginPath(); cx.arc(x + s * ex, y + ey, r * 0.2, 0, 7);
-    cx.fillStyle = '#fff'; cx.fill();
-    cx.beginPath(); cx.arc(x + s * ex, y + ey + r * 0.03, r * 0.1, 0, 7);
-    cx.fillStyle = '#2a1a20'; cx.fill();
-    if (angry) {
-      cx.beginPath();
-      cx.moveTo(x + s * ex * 0.35, y + ey - r * 0.42);
-      cx.lineTo(x + s * (ex + r * 0.18), y + ey - r * 0.22);
-      cx.lineWidth = Math.max(2, r * 0.1); cx.lineCap = 'round';
-      cx.strokeStyle = '#2a1a20'; cx.stroke();
-    }
-  }
-}
-function drawKojiPop(x, y, r) {
-  popShadow(x, y, r);
-  popBlob(x, y, r, '#fffdf7', '#8a6a4a');
-  cx.beginPath(); // 紅の鉢巻
-  cx.arc(x, y, r * 0.94, Math.PI * 1.12, Math.PI * 1.88);
-  cx.lineWidth = r * 0.3; cx.lineCap = 'round'; cx.strokeStyle = '#d9455f'; cx.stroke();
-  for (const s of [-1, 1]) {
-    cx.beginPath(); cx.arc(x + s * r * 0.35, y - r * 0.02, r * 0.17, Math.PI * 1.1, Math.PI * 1.9); // にこにこ目
-    cx.lineWidth = Math.max(2, r * 0.1); cx.lineCap = 'round'; cx.strokeStyle = '#2a1a20'; cx.stroke();
-    cx.beginPath(); cx.arc(x + s * r * 0.58, y + r * 0.25, r * 0.15, 0, 7); // ほっぺ
-    cx.fillStyle = 'rgba(245,140,140,0.5)'; cx.fill();
-  }
-  cx.beginPath(); cx.arc(x, y + r * 0.26, r * 0.2, 0.15 * Math.PI, 0.85 * Math.PI); // 口
-  cx.lineWidth = Math.max(2, r * 0.09); cx.strokeStyle = '#2a1a20'; cx.stroke();
-}
-function drawEnemyPop(e, wob) {
-  const s = e.flash > 0 ? 1.16 : 1; // 被弾つぶれ（ぷにっと膨らむ）
-  const y = e.y + wob;
-  popShadow(e.x, y, e.r);
-  if (e.hiochi) {
-    for (const sg of [-1, 1]) { // 鬼の角
-      cx.beginPath();
-      cx.moveTo(e.x + sg * e.r * 0.35, y - e.r * 0.65);
-      cx.lineTo(e.x + sg * e.r * 0.72, y - e.r * 1.25);
-      cx.lineTo(e.x + sg * e.r * 0.82, y - e.r * 0.5);
-      cx.closePath();
-      cx.fillStyle = '#f7d9a0'; cx.fill();
-      cx.lineWidth = 3; cx.strokeStyle = '#7a1f22'; cx.stroke();
-    }
-    popBlob(e.x, y, e.r * s, '#e05545', '#7a1f22', true);
-    popEyes(e.x, y, e.r, true);
-    for (const sg of [-1, 1]) { // 牙
-      cx.beginPath();
-      cx.moveTo(e.x + sg * e.r * 0.34, y + e.r * 0.4);
-      cx.lineTo(e.x + sg * e.r * 0.2, y + e.r * 0.72);
-      cx.lineTo(e.x + sg * e.r * 0.06, y + e.r * 0.4);
-      cx.closePath(); cx.fillStyle = '#fff'; cx.fill();
-    }
-  } else if (e.riceBoss) {
-    cx.beginPath(); // 米粒ボディ
-    cx.ellipse(e.x, y, e.r * 0.85 * s, e.r * 1.05 * s, 0, 0, 7);
-    cx.fillStyle = '#fffdf5'; cx.fill();
-    cx.lineWidth = 4; cx.strokeStyle = '#8a6a4a'; cx.stroke();
-    cx.beginPath(); // 金の兜
-    cx.ellipse(e.x, y - e.r * 0.55, e.r * 0.78, e.r * 0.5, 0, Math.PI, 2 * Math.PI);
-    cx.fillStyle = '#e8b64a'; cx.fill();
-    cx.lineWidth = 3; cx.strokeStyle = '#8a6a2a'; cx.stroke();
-    cx.beginPath(); // 前立て
-    cx.moveTo(e.x - e.r * 0.2, y - e.r * 0.85);
-    cx.lineTo(e.x, y - e.r * 1.35);
-    cx.lineTo(e.x + e.r * 0.2, y - e.r * 0.85);
-    cx.fillStyle = '#e8b64a'; cx.fill(); cx.stroke();
-    popEyes(e.x, y - e.r * 0.05, e.r * 0.8, true);
-  } else if (e.elite) {
-    popBlob(e.x, y, e.r * s, '#a86ad9', '#5a2a8a', true);
-    popEyes(e.x, y, e.r, true);
-    cx.beginPath(); cx.arc(e.x, y + e.r * 0.26, e.r * 0.32, 0.1 * Math.PI, 0.9 * Math.PI); // にやり
-    cx.lineWidth = e.r * 0.1; cx.strokeStyle = '#2a1a20'; cx.stroke();
-  } else {
-    popBlob(e.x, y, e.r * s, '#7ec96a', '#2f7a3a', true);
-    popEyes(e.x, y, e.r * 1.15, true);
-  }
-  if (e.flash > 0) { // 被弾の白フラッシュ
-    cx.beginPath(); cx.arc(e.x, y, e.r * 1.25, 0, 7);
-    cx.fillStyle = 'rgba(255,255,255,0.5)'; cx.fill();
-  }
+// ---- クール試作：金グラデ文字（黒フチ明朝）----
+function goldText(str, x, y, size, strokeW) {
+  cx.font = 'bold ' + size + 'px serif';
+  const g = cx.createLinearGradient(0, y - size * 0.55, 0, y + size * 0.55);
+  g.addColorStop(0, '#f8ecc0'); g.addColorStop(0.5, '#e8c86a'); g.addColorStop(1, '#a87828');
+  cx.lineWidth = strokeW; cx.lineJoin = 'round'; cx.strokeStyle = '#0d0a06';
+  cx.strokeText(str, x, y);
+  cx.fillStyle = g;
+  cx.fillText(str, x, y);
 }
 
 // 画面外のボスの方向を画面端に示す矢印（広いタンクで見失わないため）
@@ -1076,7 +988,7 @@ function bossArrow(e, glyph) {
   cx.beginPath(); cx.arc(px, py, 22, 0, 7);
   cx.fillStyle = 'rgba(20,10,8,0.65)'; cx.fill();
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.font = '22px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = '22px serif';
   cx.fillText(glyph, px, py + 1);
   cx.save();
   cx.translate(px + Math.cos(ang) * 30, py + Math.sin(ang) * 30);
@@ -1102,13 +1014,13 @@ function draw() {
 
   // タンク
   cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r + 14, 0, 7);
-  cx.fillStyle = '#b04a55'; cx.fill();
+  cx.fillStyle = '#141110'; cx.fill();
   const grad = cx.createRadialGradient(ARENA.x, ARENA.y - 60, 40, ARENA.x, ARENA.y, ARENA.r);
-  grad.addColorStop(0, '#fff8f0'); grad.addColorStop(1, '#f7ddca');
+  grad.addColorStop(0, '#d8b878'); grad.addColorStop(1, '#9a7a48');
   cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r, 0, 7);
   cx.fillStyle = grad; cx.fill();
   // もろみの泡
-  cx.fillStyle = 'rgba(255,255,255,0.35)';
+  cx.fillStyle = 'rgba(255,255,255,0.14)';
   for (let i = 0; i < 90; i++) {
     const a = i * 2.62 + G.t * 0.13, rr = (i * 53.7) % ARENA.r * 0.92;
     cx.beginPath();
@@ -1126,7 +1038,7 @@ function draw() {
   // 蒸米の島（障害物）
   for (const o of G.obstacles) {
     const og = cx.createRadialGradient(o.x - o.r * 0.3, o.y - o.r * 0.3, o.r * 0.2, o.x, o.y, o.r);
-    og.addColorStop(0, '#fbf6e8'); og.addColorStop(1, '#e2d5b4');
+    og.addColorStop(0, '#e8d6ac'); og.addColorStop(1, '#a8895c');
     cx.beginPath(); cx.arc(o.x, o.y, o.r, 0, 7);
     cx.fillStyle = og; cx.fill();
     cx.strokeStyle = 'rgba(140,120,85,0.35)'; cx.lineWidth = 3; cx.stroke();
@@ -1168,7 +1080,15 @@ function draw() {
       cx.beginPath(); cx.arc(e.x, e.y, 58, 0, 7);
       cx.fillStyle = au; cx.fill();
     }
-    drawEnemyPop(e, wob);
+    const glyph = e.hiochi ? '👹' : e.riceBoss ? '🍙' : e.elite ? '😈' : '🦠';
+    cx.font = (e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22) + 'px serif';
+    if (e.flash > 0) {
+      cx.save(); cx.filter = 'brightness(3)';
+      cx.fillText(glyph, e.x, e.y + wob);
+      cx.restore();
+    } else {
+      cx.fillText(glyph, e.x, e.y + wob);
+    }
     if (e.hiochi || e.riceBoss) { // ボスHPバー
       cx.fillStyle = 'rgba(20,10,8,0.6)';
       cx.fillRect(e.x - 32, e.y - 48, 64, 6);
@@ -1187,7 +1107,11 @@ function draw() {
     cx.fillStyle = au; cx.fill();
   }
   if (!(p.inv > 0 && Math.floor(G.t * 14) % 2)) {
-    drawKojiPop(p.x, p.y, 17);
+    cx.beginPath(); cx.arc(p.x, p.y, 16, 0, 7);
+    cx.fillStyle = '#fffdf5'; cx.fill();
+    cx.lineWidth = 2.5; cx.strokeStyle = '#8a7a55'; cx.stroke();
+    cx.fillStyle = '#4a3b22'; cx.font = 'bold 15px serif';
+    cx.fillText('麹', p.x, p.y + 1);
   }
 
   // 櫂棒スイング
@@ -1197,12 +1121,22 @@ function draw() {
     const a0 = G.swing.face - sa / 2;
     const a1 = a0 + sa * pr;
     const sr = G.swing.range || SWEEP.range;
+    // 剣閃：刃先ほど鋭く光る三日月ブレード
+    const tail = Math.min(sa * pr, 1.1);
     cx.beginPath();
-    cx.moveTo(p.x, p.y);
-    cx.arc(p.x, p.y, sr, a0, a1);
+    cx.arc(p.x, p.y, sr, a1 - tail, a1);
+    cx.arc(p.x, p.y, sr * 0.5, a1, a1 - tail, true);
     cx.closePath();
-    cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
-    cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
+    const bg2 = cx.createRadialGradient(p.x, p.y, sr * 0.4, p.x, p.y, sr);
+    bg2.addColorStop(0, 'rgba(255,255,255,0)');
+    bg2.addColorStop(0.7, 'rgba(255,246,214,0.5)');
+    bg2.addColorStop(1, 'rgba(255,255,255,0.95)');
+    cx.fillStyle = bg2; cx.fill();
+    // 刃のエッジ
+    cx.beginPath(); cx.arc(p.x, p.y, sr, a1 - tail, a1);
+    cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(255,255,255,0.9)'; cx.stroke();
+    // 櫂棒本体
+    cx.strokeStyle = '#4a3018'; cx.lineWidth = 7; cx.lineCap = 'round';
     cx.beginPath();
     cx.moveTo(p.x + Math.cos(a1) * 14, p.y + Math.sin(a1) * 14);
     cx.lineTo(p.x + Math.cos(a1) * (sr - 6), p.y + Math.sin(a1) * (sr - 6));
@@ -1218,15 +1152,37 @@ function draw() {
   }
   cx.globalAlpha = 1;
 
+  // 斬撃線（撃破の瞬間に白い線が走る）
+  for (const s of G.slashes) {
+    const al = s.t / 0.18;
+    const len = 46 + (1 - al) * 30;
+    cx.globalAlpha = al;
+    cx.lineCap = 'round';
+    for (const [ang, w] of [[s.a, 3.5], [s.a + 0.5, 2]]) {
+      cx.beginPath();
+      cx.moveTo(s.x - Math.cos(ang) * len, s.y - Math.sin(ang) * len);
+      cx.lineTo(s.x + Math.cos(ang) * len, s.y + Math.sin(ang) * len);
+      cx.lineWidth = w; cx.strokeStyle = '#fff';
+      cx.stroke();
+    }
+  }
+  cx.globalAlpha = 1;
+
   // フロートテキスト
   for (const t of G.texts) {
     cx.globalAlpha = Math.min(t.t * 2, 1);
-    cx.font = 'bold ' + t.size + 'px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold ' + t.size + 'px serif';
     cx.fillStyle = t.col;
     cx.fillText(t.str, t.x, t.y);
   }
   cx.globalAlpha = 1;
   cx.restore();
+
+  // ビネット（四隅を落として戦場の空気に）
+  const vg = cx.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.88);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+  cx.fillStyle = vg; cx.fillRect(0, 0, W, H);
 
   // 警報フラッシュ
   if (G.alarm > 0 && Math.floor(G.t * 8) % 2) {
@@ -1244,11 +1200,8 @@ function draw() {
     cx.fillStyle = 'rgba(20,12,8,0.55)';
     cx.fillRect(0, H * 0.30, W, 64);
     cx.textAlign = 'center'; cx.textBaseline = 'middle';
-    cx.font = 'bold 38px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
-    cx.lineWidth = 7; cx.lineJoin = 'round'; cx.strokeStyle = '#2a1a20';
-    cx.strokeText(G.banner.str, W / 2, H * 0.30 + 32); // 黒フチ
-    cx.fillStyle = G.banner.color;
-    cx.fillText(G.banner.str, W / 2, H * 0.30 + 32);
+    cx.font = 'bold 38px serif';
+    goldText(G.banner.str, W / 2, H * 0.30 + 32, 40, 7);
     cx.globalAlpha = 1;
   }
 
@@ -1258,7 +1211,7 @@ function draw() {
   if (G.riceBoss) bossArrow(G.riceBoss, '🍙');
   cx.textAlign = 'left'; cx.textBaseline = 'top';
   // 純度（残機）
-  cx.font = '26px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = '26px serif';
   for (let i = 0; i < playerMaxHp(); i++) {
     cx.globalAlpha = i < p.hp ? 1 : 0.18;
     cx.fillText('🍶', 16 + i * 32, 12);
@@ -1267,9 +1220,9 @@ function draw() {
   // 撃破数
   cx.textAlign = 'right';
   cx.fillStyle = '#f2e9d4';
-  cx.font = 'bold 34px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = 'bold 34px serif';
   cx.fillText(G.kills + ' 斬', W - 20, 10);
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = '13px serif';
   cx.fillStyle = '#9a8c72';
   cx.fillText('最高 ' + META.best + ' 斬 ／ 制圧 ' + Object.keys(META.regionClear || {}).length + '/10地域', W - 20, 48);
   // 装備（右下パネル。タッチ時はボタンと被るので出さない）
@@ -1277,13 +1230,14 @@ function draw() {
   // コンボ
   if (G.combo >= 5) {
     cx.textAlign = 'center'; cx.textBaseline = 'top';
-    cx.fillStyle = '#ffd76e';
-    cx.font = 'bold ' + Math.min(22 + G.combo * 0.4, 40) + 'px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
-    cx.fillText(G.combo + ' 連斬', W / 2, 14);
+    const csz = Math.min(22 + G.combo * 0.4, 40);
+    cx.textBaseline = 'middle';
+    goldText(G.combo + ' 連斬', W / 2, 14 + csz / 2, csz, 6);
+    cx.textBaseline = 'top';
   }
   // 蔵の発酵度（制圧ゲージ）
   cx.textAlign = 'center'; cx.textBaseline = 'top';
-  cx.font = 'bold 15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = 'bold 15px serif';
   cx.fillStyle = G.hiochi ? '#ff5a4a' : '#f2e9d4';
   cx.fillText(regionName() + '〔' + DIFFS[G.diff].name + '〕・' + G.node.name + '　発酵度 ' + Math.floor(G.kuraAlcohol) + '%', W / 2, 54);
   cx.fillStyle = 'rgba(20,10,8,0.5)';
@@ -1293,7 +1247,7 @@ function draw() {
   // 糖化ゲージ（「糖」の文字が満ちる）
   const mr = G.glucose / G.glucoseMax;
   cx.textAlign = 'left'; cx.textBaseline = 'bottom';
-  cx.font = 'bold 44px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = 'bold 44px serif';
   cx.fillStyle = 'rgba(255,215,110,0.18)';
   cx.fillText('糖', 18, H - 14);
   if (mr > 0) {
@@ -1303,10 +1257,10 @@ function draw() {
     cx.fillText('糖', 18, H - 14);
     cx.restore();
   }
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+  cx.font = '13px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('必殺：' + YEASTS[META.yeast].ult + '（' + YEASTS[META.yeast].short + '）', 74, H - 48);
   if (G.glucose >= yeastCost() && Math.floor(G.t * 3) % 2) {
-    cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#ffd76e';
+    cx.font = '13px serif'; cx.fillStyle = '#ffd76e';
     cx.fillText('Xで発酵！', 74, H - 30);
   }
   // 操作説明（タッチ時は仮想ボタン）
@@ -1316,7 +1270,7 @@ function draw() {
     cx.beginPath(); cx.arc(FERMENT_BTN.x, FERMENT_BTN.y, FERMENT_BTN.r, 0, 7);
     cx.fillStyle = ready ? 'rgba(255,215,110,0.85)' : 'rgba(120,100,60,0.35)';
     cx.fill();
-    cx.font = 'bold 20px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = ready ? '#3a2c14' : '#141008';
+    cx.font = 'bold 20px serif'; cx.fillStyle = ready ? '#3a2c14' : '#141008';
     cx.fillText('発酵', FERMENT_BTN.x, FERMENT_BTN.y);
     if (stickBase && stickCur) {
       cx.beginPath(); cx.arc(stickBase.x, stickBase.y, 40, 0, 7);
@@ -1328,7 +1282,7 @@ function draw() {
     }
   } else {
     cx.textAlign = 'center';
-    cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+    cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
     cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ（糖化）　X: 発酵', W / 2, H - 8);
   }
 
@@ -1338,18 +1292,18 @@ function draw() {
     cx.fillRect(0, 0, W, H);
     cx.textAlign = 'center'; cx.textBaseline = 'middle';
     cx.fillStyle = '#f2e9d4';
-    cx.font = 'bold 40px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 40px serif';
     cx.fillText('上槽！　' + G.node.name + ' 制圧', W / 2, H / 2 - 110);
     if (G.result.weaponChoice && !G.result.weaponDone) {
       // ---- 武器（麹）ページ：火落ち菌の戦利品 ----
       const wd = G.result.weaponDrop;
-      cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#b8d98a';
+      cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
       cx.fillText('火落ち菌の戦利品', W / 2, H / 2 - 72);
-      cx.font = 'bold 26px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#b8d98a';
+      cx.font = 'bold 26px serif'; cx.fillStyle = '#b8d98a';
       cx.fillText(KOJI[wd.koji].name + '×' + STYLE[wd.style].name + ' の' + wtypeOf(wd).label, W / 2, H / 2 - 40);
-      cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+      cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
       cx.fillText(KOJI[wd.koji].desc + '　' + STYLE[wd.style].desc, W / 2, H / 2 - 4);
-      cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+      cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
       cx.fillText('←→で選択', W / 2, H / 2 + 26);
       const wopts = [
         { label: '持ち替える（今のは袋へ）', w: wd },
@@ -1357,12 +1311,12 @@ function draw() {
       ];
       wopts.forEach((o, i) => {
         const sel = G.wchoice === i;
-        cx.font = (sel ? 'bold ' : '') + '16px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+        cx.font = (sel ? 'bold ' : '') + '16px serif';
         cx.fillStyle = sel ? '#ffd76e' : '#8a7c62';
         cx.fillText((sel ? '▶ ' : '　 ') + o.label + '：' + weaponText(o.w), W / 2, H / 2 + 52 + i * 28);
       });
       if (G.resultT > 0.6 && Math.floor(G.t * 2) % 2 === 0) {
-        cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+        cx.font = '17px serif'; cx.fillStyle = '#9a8c72';
         cx.fillText('Space で決定（次は酒米）', W / 2, H / 2 + 130);
       }
       return;
@@ -1370,23 +1324,23 @@ function draw() {
     // ---- 酒米ページ ----
     const d = G.result.drop;
     if (G.riceBossDone) {
-      cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c9a0ff';
+      cx.font = '15px serif'; cx.fillStyle = '#c9a0ff';
       cx.fillText('洗脳が解けた。浄化された魂が防具として宿る', W / 2, H / 2 - 72);
     }
-    cx.font = 'bold 26px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 26px serif';
     cx.fillStyle = RARITY[d.rarity].color;
     cx.fillText((G.riceBossDone ? '浄化の証：' : 'ドロップ：') + RARITY[d.rarity].label + '・' + d.name, W / 2, H / 2 - 40);
     const subKeys = Object.keys(d.subs);
-    cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = '17px serif';
     cx.fillStyle = '#c8bda0';
     cx.fillText(subKeys.length ? subKeys.map(k => SUBS[k].name + '（' + SUBS[k].desc + '）').join('　') : 'サブスキルなし', W / 2, H / 2 - 4);
     if (G.result.weaponAuto) {
-      cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#b8d98a';
+      cx.font = '15px serif'; cx.fillStyle = '#b8d98a';
       cx.fillText('はじめての麹武器：' + weaponText(META.weapon) + ' を装備！', W / 2, H / 2 + 104);
     }
     if (G.result.yeastGained) {
       const y = YEASTS[G.result.yeastGained];
-      cx.font = 'bold 17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#8ad9c8';
+      cx.font = 'bold 17px serif'; cx.fillStyle = '#8ad9c8';
       cx.fillText('新酵母を会得：' + y.name + '（' + y.desc + '）　Cキーで切替', W / 2, H / 2 + 128);
     }
     if (G.result.needChoice) {
@@ -1394,11 +1348,11 @@ function draw() {
         { label: '着替える（今のは袋へ）', rice: d },
         { label: '袋にしまって今のまま　', rice: META.rice },
       ];
-      cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+      cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
       cx.fillText('←→で選択', W / 2, H / 2 + 26);
       opts.forEach((o, i) => {
         const sel = G.choice === i;
-        cx.font = (sel ? 'bold ' : '') + '16px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+        cx.font = (sel ? 'bold ' : '') + '16px serif';
         cx.fillStyle = sel ? '#ffd76e' : '#8a7c62';
         cx.fillText((sel ? '▶ ' : '　 ') + o.label + '：' + riceText(o.rice), W / 2, H / 2 + 52 + i * 28);
       });
@@ -1407,11 +1361,11 @@ function draw() {
       cx.fillText('はじめての酒米。装備した！', W / 2, H / 2 + 40);
     }
     if (G.result.polished) {
-      cx.fillStyle = '#ffd76e'; cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+      cx.fillStyle = '#ffd76e'; cx.font = '17px serif';
       cx.fillText('杜氏の極意を授かった：' + G.result.polished, W / 2, H / 2 + 128);
     }
     if (G.resultT > 0.6 && Math.floor(G.t * 2) % 2 === 0) {
-      cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+      cx.font = '17px serif'; cx.fillStyle = '#9a8c72';
       cx.fillText(G.node.boss ? 'Space で地方制圧の儀へ' : 'Space で進軍図に戻る', W / 2, H / 2 + 162);
     }
   }
@@ -1422,12 +1376,12 @@ function draw() {
     cx.fillRect(0, 0, W, H);
     cx.textAlign = 'center'; cx.textBaseline = 'middle';
     cx.fillStyle = '#f2e9d4';
-    cx.font = 'bold 42px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 42px serif';
     cx.fillText('もろみ、腐造す…', W / 2, H / 2 - 70);
-    cx.font = 'bold 30px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 30px serif';
     cx.fillStyle = '#ffd76e';
     cx.fillText(regionName() + '・' + (G.node ? G.node.name : '') + 'で ' + G.kills + ' 斬', W / 2, H / 2 - 10);
-    cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = '17px serif';
     cx.fillStyle = '#b8d98a';
     cx.fillText('酒米と精米は持ち越し。次の仕込みはもっと強い', W / 2, H / 2 + 32);
     cx.fillStyle = '#9a8c72';
@@ -1442,7 +1396,7 @@ function drawEquipUI(withYeast) {
   lines.push(weaponText(META.weapon));
   lines.push(riceText(META.rice));
   lines.push('精米 ' + META.polish + '%（攻' + weaponDmg() + '）' + (META.gokui.length ? '　極意：' + META.gokui.map(k => k === 'tou' ? '糖化' : '回避').join('・') : ''));
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = '13px serif';
   const wMax = Math.max(...lines.map(s => cx.measureText(s).width));
   const pad = 10, lh = 18;
   const bw = wMax + pad * 2, bh = lines.length * lh + pad * 2 - 4;
@@ -1493,48 +1447,48 @@ function itemDetail(it) {
   return riceText(it.r);
 }
 function drawEquip() {
-  cx.fillStyle = '#2b2140'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#12100d'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px serif';
   cx.fillText('装備', W / 2, 52);
   cx.fillStyle = 'rgba(20,12,8,0.8)';
   cx.beginPath();
   if (cx.roundRect) cx.roundRect(EQUIP_BACK_BTN.x, EQUIP_BACK_BTN.y, EQUIP_BACK_BTN.w, EQUIP_BACK_BTN.h, 8); else cx.rect(EQUIP_BACK_BTN.x, EQUIP_BACK_BTN.y, EQUIP_BACK_BTN.w, EQUIP_BACK_BTN.h);
   cx.fill();
-  cx.font = 'bold 15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+  cx.font = 'bold 15px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('戻る（E）', EQUIP_BACK_BTN.x + EQUIP_BACK_BTN.w / 2, EQUIP_BACK_BTN.y + EQUIP_BACK_BTN.h / 2);
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#8a7c62';
+  cx.font = '13px serif'; cx.fillStyle = '#8a7c62';
   cx.fillText('袋は各' + BAG_CAP + '個まで。あふれると古いものから流れていく', W / 2, 82);
   const cols = equipCols();
   const xs = [W * 0.2, W * 0.5, W * 0.8];
   cols.forEach((c, ci) => {
-    cx.font = 'bold 16px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 16px serif';
     cx.fillStyle = ci === G.eqCol ? '#ffd76e' : '#9a8c72';
     cx.fillText(c.title, xs[ci], 120);
     c.items.forEach((it, i) => {
       const sel = ci === G.eqCol && i === G.eqIdx;
-      cx.font = (sel ? 'bold ' : '') + '14px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+      cx.font = (sel ? 'bold ' : '') + '14px serif';
       cx.fillStyle = sel ? '#ffd76e' : it.cur ? '#b8d98a' : '#c8bda0';
       cx.fillText((sel ? '▶ ' : '') + itemLabel(it) + (it.cur ? '（装備中）' : ''), xs[ci], 152 + i * 26);
     });
   });
   // 選択中の詳細
-  cx.font = '14px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+  cx.font = '14px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText(itemDetail(cols[G.eqCol].items[G.eqIdx]), W / 2, H - 64);
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
   cx.fillText('←→: 欄　↑↓: 選択　Space: 装備　E: 進軍図へ戻る', W / 2, H - 32);
 }
 
 // ---- タイトル画面 ----
 function drawTitle() {
-  cx.fillStyle = '#2b2140'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#0b0908'; cx.fillRect(0, 0, W, H);
   // 背景のタンク（うっすら）
   cx.save();
   cx.globalAlpha = 0.45;
   cx.beginPath(); cx.arc(W / 2, H / 2 + 40, 250, 0, 7);
-  cx.fillStyle = '#b04a55'; cx.fill();
+  cx.fillStyle = '#141110'; cx.fill();
   const grad = cx.createRadialGradient(W / 2, H / 2 - 20, 40, W / 2, H / 2 + 40, 240);
-  grad.addColorStop(0, '#fff8f0'); grad.addColorStop(1, '#f7ddca');
+  grad.addColorStop(0, '#d8b878'); grad.addColorStop(1, '#9a7a48');
   cx.beginPath(); cx.arc(W / 2, H / 2 + 40, 238, 0, 7);
   cx.fillStyle = grad; cx.fill();
   // 漂う雑菌と泡
@@ -1542,46 +1496,50 @@ function drawTitle() {
   for (let i = 0; i < 10; i++) {
     const a = i * 0.63 + G.t * 0.1, rr = 90 + (i * 37) % 140;
     const ex = W / 2 + Math.cos(a) * rr, ey = H / 2 + 40 + Math.sin(a) * rr * 0.8;
-    cx.font = (14 + (i % 3) * 6) + 'px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = (14 + (i % 3) * 6) + 'px serif';
     cx.fillText('🦠', ex, ey);
   }
   cx.restore();
   // 麹坊やと櫂棒
   const bob = Math.sin(G.t * 2.5) * 5;
-  drawKojiPop(W / 2, H / 2 + 46 + bob, 26);
+  cx.beginPath(); cx.arc(W / 2, H / 2 + 46 + bob, 24, 0, 7);
+  cx.fillStyle = '#fffdf5'; cx.fill();
+  cx.lineWidth = 3; cx.strokeStyle = '#8a7a55'; cx.stroke();
+  cx.fillStyle = '#4a3b22'; cx.font = 'bold 22px serif';
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillText('麹', W / 2, H / 2 + 47 + bob);
   cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
   cx.beginPath();
   cx.moveTo(W / 2 + 24, H / 2 + 40 + bob);
   cx.lineTo(W / 2 + 86, H / 2 - 26 + bob);
   cx.stroke();
   // タイトル
-  cx.fillStyle = 'rgba(20,12,8,0.35)'; cx.fillRect(0, H * 0.16, W, 120);
-  cx.font = 'bold 76px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
-  cx.lineWidth = 12; cx.lineJoin = 'round'; cx.strokeStyle = '#fffdf5';
-  cx.strokeText('清酒無双', W / 2, H * 0.16 + 58); // 白フチ
-  cx.fillStyle = '#d9455f';
-  cx.fillText('清酒無双', W / 2, H * 0.16 + 58);
-  cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+  cx.fillStyle = 'rgba(8,5,4,0.55)'; cx.fillRect(0, H * 0.16, W, 120);
+  cx.fillStyle = '#8a1f26'; cx.fillRect(0, H * 0.16, W, 3); cx.fillRect(0, H * 0.16 + 117, W, 3); // 紅の帯線
+  goldText('清酒無双', W / 2, H * 0.16 + 58, 88, 12);
+  cx.fillStyle = '#a3282e'; cx.fillRect(W / 2 + 218, H * 0.16 + 18, 46, 46); // 落款印
+  cx.font = 'bold 32px serif'; cx.fillStyle = '#f2e2d0';
+  cx.fillText('醸', W / 2 + 241, H * 0.16 + 43);
+  cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('― 醸して、なぎ倒せ。醸造ハクスラ無双 ―', W / 2, H * 0.16 + 104);
   // 世界観と記録
-  cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+  cx.font = '15px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, H - 150);
   const clearedN = Object.keys(META.regionClear || {}).length;
   if (META.best > 0 || clearedN > 0) {
-    cx.font = '14px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+    cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
     cx.fillText('最高 ' + META.best + ' 斬 ／ 制圧 ' + clearedN + '/10地域　（装備と極意は持ち越し）', W / 2, H - 126);
   }
   if (innerHeight > innerWidth) { // 縦持ちのスマホには横持ちを勧める
-    cx.font = 'bold 17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#ffd76e';
+    cx.font = 'bold 17px serif'; cx.fillStyle = '#ffd76e';
     cx.fillText('📱 スマホは横持ち推奨です', W / 2, H - 180);
   }
   // 開始と操作
   if (Math.floor(G.t * 2) % 2 === 0) {
-    cx.font = 'bold 22px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#f2e9d4';
+    cx.font = 'bold 22px serif'; cx.fillStyle = '#f2e9d4';
     cx.fillText('Space で仕込み開始', W / 2, H - 86);
   }
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
   cx.fillText('WASD/矢印: 移動　Space: 櫂入れ　X: 必殺（装備中の酵母で技が変わる）　E: 装備　R: 再仕込み　M: 音　※スマホはタッチ操作', W / 2, H - 40);
 }
 
@@ -1592,11 +1550,11 @@ function worldCardRect(i) {
 }
 
 function drawWorld() {
-  cx.fillStyle = '#2b2140'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#12100d'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px serif';
   cx.fillText('ワールドマップ ― どの地域を醸すか ―', W / 2, 56);
-  cx.font = '12px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#8a7c62';
+  cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
   cx.fillText('雑菌に冒された全国の蔵々を、麹坊やが浄化して回る', W / 2, 86);
   for (let i = 0; i < 10; i++) {
     const rg = REGIONS10[i], rc = worldCardRect(i);
@@ -1610,10 +1568,10 @@ function drawWorld() {
     cx.strokeStyle = sel ? '#ffd76e' : clearedD !== undefined ? '#b8d98a' : '#6a5c48';
     cx.stroke();
     const mx = rc.x + rc.w / 2;
-    cx.font = 'bold 20px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = 'bold 20px serif';
     cx.fillStyle = sel ? '#ffd76e' : '#f2e9d4';
     cx.fillText(rg.name, mx, rc.y + 30);
-    cx.font = '12px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+    cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
     cx.fillText('特産：' + WTYPES[rg.weapon].label + '・' + rg.rice.replace('の魂', ''), mx, rc.y + 54);
     cx.fillStyle = '#b8a26e';
     cx.fillText('風土：' + rg.gim.n, mx, rc.y + 74);
@@ -1621,7 +1579,7 @@ function drawWorld() {
       cx.fillStyle = '#8ad9c8';
       cx.fillText('酵母（' + YEASTS[rg.yeast.y].short + '）の気配', mx, rc.y + 94);
     }
-    cx.font = '12px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = '12px serif';
     if (clearedD !== undefined) {
       cx.fillStyle = clearedD >= 3 ? '#ffd76e' : '#b8d98a';
       cx.fillText('制圧：' + DIFFS[clearedD].name, mx, rc.y + 116);
@@ -1632,7 +1590,7 @@ function drawWorld() {
   }
   drawEquipUI(true);
   cx.textAlign = 'center'; cx.textBaseline = 'bottom';
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
   cx.fillText('←→↑↓で地域を選択　Spaceで難易度選択　E: 装備', W / 2, H - 8);
 }
 
@@ -1648,23 +1606,23 @@ function drawDiffsel() {
   cx.fill();
   cx.lineWidth = 2; cx.strokeStyle = '#8a7a55'; cx.stroke();
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.font = 'bold 24px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#f2e9d4';
+  cx.font = 'bold 24px serif'; cx.fillStyle = '#f2e9d4';
   cx.fillText(REGIONS10[G.worldSel].name + '地方 ― 仕込みの厳しさを選ぶ', W / 2, DIFF_PANEL.y + 40);
   const clearedD = (META.regionClear || {})[REGIONS10[G.worldSel].name];
   for (let i = 0; i < 4; i++) {
     const sel = i === G.diffSel;
     const locked = diffLocked(i);
     const y = diffRowY(i);
-    cx.font = (sel ? 'bold ' : '') + '19px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+    cx.font = (sel ? 'bold ' : '') + '19px serif';
     cx.fillStyle = locked ? (sel ? '#8a6c58' : '#5a4c40') : sel ? '#ffd76e' : '#c8bda0';
     const mark = locked ? '🔒' : (clearedD !== undefined && clearedD >= i ? '🍶' : '　');
     cx.fillText((sel ? '▶ ' : '　 ') + DIFFS[i].name + ' ' + mark, W / 2 - 120, y);
-    cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = locked ? '#6a5c48' : sel ? '#c8bda0' : '#8a7c62';
+    cx.font = '13px serif'; cx.fillStyle = locked ? '#6a5c48' : sel ? '#c8bda0' : '#8a7c62';
     cx.textAlign = 'left';
     cx.fillText(locked ? 'この地域を寒仕込みで制圧すると解禁' : DIFFS[i].desc, W / 2 - 40, y);
     cx.textAlign = 'center';
   }
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#6a5c48';
+  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
   cx.fillText('↑↓で選択　Spaceで進軍　E/Escで戻る', W / 2, DIFF_PANEL.y + DIFF_PANEL.h - 22);
 }
 
@@ -1675,15 +1633,15 @@ function nodePos(r, i, count) { // 4ステージ横並び
 }
 
 function drawMap() {
-  cx.fillStyle = '#2b2140'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#12100d'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 32px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.fillStyle = '#f2e9d4'; cx.font = 'bold 32px serif';
   cx.fillText(regionName() + '地方 進軍図〔' + DIFFS[G.diff].name + '〕', W / 2, 60);
-  cx.font = '12px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#8a7c62';
+  cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
   const gim = REGIONS10[G.regionIdx].gim;
   cx.fillText('風土：' + gim.n + '（' + gim.d + '）　特産：' + WTYPES[REGIONS10[G.regionIdx].weapon].label + '・' + regionRice().replace('の魂', '') + '　ドロップ：' + DIFFS[G.diff].desc, W / 2, 86);
   // 地方の総アルコールゲージ
-  cx.font = '14px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+  cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('地方制圧度（総アルコール）　' + Math.floor(G.regionGauge) + ' / 100', W / 2, 102);
   cx.fillStyle = 'rgba(20,10,8,0.6)'; cx.fillRect(W / 2 - 160, 116, 320, 9);
   cx.fillStyle = '#b8a26e'; cx.fillRect(W / 2 - 160, 116, 320 * G.regionGauge / 100, 9);
@@ -1707,12 +1665,12 @@ function drawMap() {
       cx.lineWidth = sel ? 4 : 2;
       cx.strokeStyle = sel ? '#ffd76e' : cleared ? '#b8d98a' : '#6a5c48';
       cx.stroke();
-      cx.font = (nd.boss ? 32 : 26) + 'px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+      cx.font = (nd.boss ? 32 : 26) + 'px serif';
       cx.fillText(cleared ? '🍶' : nd.boss ? '🏯' : '🏚', p.x, p.y + 1);
-      cx.font = 'bold 15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+      cx.font = 'bold 15px serif';
       cx.fillStyle = sel ? '#ffd76e' : cleared ? '#8a9c72' : '#c8bda0';
       cx.fillText(nd.boss ? '総本山' : nd.name, p.x, p.y + (nd.boss ? 62 : 54));
-      cx.font = '12px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+      cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
       cx.fillText(cleared ? '制圧済み' : nd.desc, p.x, p.y + (nd.boss ? 80 : 72));
       const ny = nodeYeast(r);
       if (!cleared && ny && !META.yeasts.includes(ny)) {
@@ -1724,7 +1682,11 @@ function drawMap() {
   const sp = nodePos(G.rank, G.selIdx, RANKS[G.rank].length);
   const bob = Math.sin(G.t * 5) * 4;
   const py = sp.y - (RANKS[G.rank][G.selIdx].boss ? 66 : 58) + bob;
-  drawKojiPop(sp.x, py, 14);
+  cx.beginPath(); cx.arc(sp.x, py, 14, 0, 7);
+  cx.fillStyle = '#fffdf5'; cx.fill();
+  cx.lineWidth = 2; cx.strokeStyle = '#8a7a55'; cx.stroke();
+  cx.fillStyle = '#4a3b22'; cx.font = 'bold 13px serif';
+  cx.fillText('麹', sp.x, py + 1);
   // 装備（右下パネル）と装備ボタン・操作
   drawEquipUI(true);
   cx.fillStyle = 'rgba(20,12,8,0.55)';
@@ -1732,26 +1694,26 @@ function drawMap() {
   if (cx.roundRect) cx.roundRect(MAP_EQUIP_BTN.x, MAP_EQUIP_BTN.y, MAP_EQUIP_BTN.w, MAP_EQUIP_BTN.h, 8); else cx.rect(MAP_EQUIP_BTN.x, MAP_EQUIP_BTN.y, MAP_EQUIP_BTN.w, MAP_EQUIP_BTN.h);
   cx.fill();
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.font = 'bold 15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+  cx.font = 'bold 15px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('装備（E）', MAP_EQUIP_BTN.x + MAP_EQUIP_BTN.w / 2, MAP_EQUIP_BTN.y + MAP_EQUIP_BTN.h / 2);
   cx.textAlign = 'center'; cx.textBaseline = 'bottom';
-  cx.font = '13px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = '13px serif';
   cx.fillStyle = '#6a5c48';
   cx.fillText((RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍') + '　E: 装備', W / 2, H - 8);
 }
 
 function drawRegionClear() {
-  cx.fillStyle = '#2b2140'; cx.fillRect(0, 0, W, H);
+  cx.fillStyle = '#12100d'; cx.fillRect(0, 0, W, H);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
   cx.fillStyle = '#ffd76e';
-  cx.font = 'bold 46px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif';
+  cx.font = 'bold 46px serif';
   cx.fillText(regionName() + '地方、完全制圧！', W / 2, H / 2 - 70);
-  cx.font = '20px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#f2e9d4';
+  cx.font = '20px serif'; cx.fillStyle = '#f2e9d4';
   cx.fillText('総アルコール 100 ／ ここまで ' + G.kills + ' 斬', W / 2, H / 2 - 10);
-  cx.font = '15px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#9a8c72';
+  cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('次の地方は敵が強くなり、酒米のドロップも上等になる', W / 2, H / 2 + 30);
   if (G.clearT > 0.8 && Math.floor(G.t * 2) % 2 === 0) {
-    cx.font = '17px "Hiragino Maru Gothic ProN","Arial Rounded MT Bold",sans-serif'; cx.fillStyle = '#c8bda0';
+    cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
     cx.fillText('Space でワールドマップへ帰還', W / 2, H / 2 + 84);
   }
 }
