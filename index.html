@@ -1147,22 +1147,101 @@ function draw() {
     const pr = G.swing.t / SWEEP.time;
     const sa = G.swing.arc || SWEEP.arc;
     const sr = G.swing.range || SWEEP.range;
-    const twin = G.swing.type === 'soken';
-    const blades = twin
-      ? [{ from: G.swing.face - sa / 2, dir: 1 }, { from: G.swing.face + sa / 2, dir: -1 }]
-      : [{ from: G.swing.face - sa / 2, dir: 1 }];
-    for (const b of blades) {
-      const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
+    const type = G.swing.type;
+    const face = G.swing.face;
+    if (type === 'yari') {
+      // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
+      const cos = Math.cos(face), sin = Math.sin(face);
+      const nx = -sin, ny = cos; // 柄に直交する法線
+      const ext = pr < 0.5 ? 14 + (sr - 14) * (pr / 0.5) : sr - (sr - 14) * ((pr - 0.5) / 0.5);
+      // 櫂棒本体
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
+      cx.beginPath();
+      cx.moveTo(p.x + cos * 8, p.y + sin * 8);
+      cx.lineTo(p.x + cos * ext, p.y + sin * ext);
+      cx.stroke();
+      // スピードライン（柄の左右＋中央、先端側ほど不透明）
+      for (const off of [-6, 6, 0]) {
+        const ox = nx * off, oy = ny * off;
+        const d0 = ext * 0.4, d1 = ext;
+        const g = cx.createLinearGradient(p.x + cos * d0 + ox, p.y + sin * d0 + oy, p.x + cos * d1 + ox, p.y + sin * d1 + oy);
+        g.addColorStop(0, 'rgba(255,240,190,0)');
+        g.addColorStop(1, 'rgba(255,240,190,0.75)');
+        cx.strokeStyle = g; cx.lineWidth = off === 0 ? 2 : 1.4;
+        cx.beginPath();
+        cx.moveTo(p.x + cos * d0 + ox, p.y + sin * d0 + oy);
+        cx.lineTo(p.x + cos * d1 + ox, p.y + sin * d1 + oy);
+        cx.stroke();
+      }
+    } else if (type === 'otsuchi') {
+      // 大槌：振りかぶり（0〜0.4・光跡なし）→ 叩きつけ（0.4〜1.0）
+      const cos0 = Math.cos(face), sin0 = Math.sin(face);
+      if (pr < 0.4) {
+        // 振りかぶり：柄をfaceの逆方向へ短く構える
+        const bang = face + Math.PI;
+        const bl = 26 + 12 * (pr / 0.4);
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
+        cx.beginPath();
+        cx.moveTo(p.x, p.y);
+        cx.lineTo(p.x + Math.cos(bang) * bl, p.y + Math.sin(bang) * bl);
+        cx.stroke();
+      } else {
+        // 叩きつけ：柄が逆方向からfaceへ振り下ろされる
+        if (!G.swing.impacted) { G.shake = Math.max(G.shake, 8); G.swing.impacted = true; } // 着弾の一撃は一度だけ
+        const k = (pr - 0.4) / 0.6;
+        const ang = face + Math.PI * (1 - k);
+        // 光跡（振り下ろしの扇）
+        cx.beginPath();
+        cx.moveTo(p.x, p.y);
+        cx.arc(p.x, p.y, sr, Math.min(ang, face), Math.max(ang, face));
+        cx.closePath();
+        cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
+        // 柄
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
+        cx.beginPath();
+        cx.moveTo(p.x + Math.cos(ang) * 12, p.y + Math.sin(ang) * 12);
+        cx.lineTo(p.x + Math.cos(ang) * sr, p.y + Math.sin(ang) * sr);
+        cx.stroke();
+        // 衝撃リング（着弾点＝face方向 range*0.7、半径20→60に広がって消える）
+        const rx = p.x + cos0 * sr * 0.7, ry = p.y + sin0 * sr * 0.7;
+        const rr = 20 + k * 40;
+        cx.globalAlpha = 1 - k;
+        cx.strokeStyle = 'rgba(255,255,255,0.95)'; cx.lineWidth = 3;
+        cx.beginPath(); cx.arc(rx, ry, rr, 0, 7); cx.stroke();
+        cx.globalAlpha = 1;
+      }
+    } else if (type === 'naginata') {
+      // 薙刀：光跡と柄が全周1回転する
+      const lead = face - Math.PI + 2 * Math.PI * pr;
+      const tail = Math.min(1.4, 2 * Math.PI * pr); // lead-tail〜lead の扇で追従
       cx.beginPath();
       cx.moveTo(p.x, p.y);
-      cx.arc(p.x, p.y, sr, Math.min(b.from, lead), Math.max(b.from, lead));
+      cx.arc(p.x, p.y, sr, lead - tail, lead);
       cx.closePath();
       cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
-      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
       cx.beginPath();
       cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
       cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
       cx.stroke();
+    } else {
+      const twin = G.swing.type === 'soken';
+      const blades = twin
+        ? [{ from: G.swing.face - sa / 2, dir: 1 }, { from: G.swing.face + sa / 2, dir: -1 }]
+        : [{ from: G.swing.face - sa / 2, dir: 1 }];
+      for (const b of blades) {
+        const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
+        cx.beginPath();
+        cx.moveTo(p.x, p.y);
+        cx.arc(p.x, p.y, sr, Math.min(b.from, lead), Math.max(b.from, lead));
+        cx.closePath();
+        cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+        cx.beginPath();
+        cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
+        cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
+        cx.stroke();
+      }
     }
   }
 
