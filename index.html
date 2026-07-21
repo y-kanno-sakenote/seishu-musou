@@ -961,6 +961,55 @@ function update(dt) {
   }
 }
 
+// ---- 主人公：若き蔵人（藍の法被・紅の鉢巻・鋭い目）----
+function drawKurabito(x, y, r) {
+  // 影
+  cx.beginPath(); cx.ellipse(x, y + r * 0.95, r * 0.7, r * 0.26, 0, 0, 7);
+  cx.fillStyle = 'rgba(0,0,0,0.25)'; cx.fill();
+  // 鉢巻のたなびき（風になびく2本）
+  const wv = Math.sin(G.t * 6) * r * 0.14;
+  cx.strokeStyle = '#c8323c'; cx.lineCap = 'round';
+  for (const s of [0, 1]) {
+    cx.lineWidth = Math.max(2, r * (0.15 - s * 0.04));
+    cx.beginPath();
+    cx.moveTo(x - r * 0.42, y - r * 0.6);
+    cx.quadraticCurveTo(x - r * (1.1 + s * 0.2), y - r * (0.55 - s * 0.3) + wv, x - r * (1.75 + s * 0.25), y - r * (0.4 - s * 0.5) + wv * 1.6);
+    cx.stroke();
+  }
+  // 胴（藍の法被）
+  cx.beginPath();
+  cx.moveTo(x - r * 0.62, y - r * 0.12);
+  cx.quadraticCurveTo(x - r * 0.74, y + r * 0.85, x - r * 0.4, y + r * 0.92);
+  cx.lineTo(x + r * 0.4, y + r * 0.92);
+  cx.quadraticCurveTo(x + r * 0.74, y + r * 0.85, x + r * 0.62, y - r * 0.12);
+  cx.closePath();
+  cx.fillStyle = '#26324e'; cx.fill();
+  cx.lineWidth = Math.max(1.5, r * 0.09); cx.lineJoin = 'round'; cx.strokeStyle = '#101826'; cx.stroke();
+  // 襟（白のV）
+  cx.beginPath();
+  cx.moveTo(x - r * 0.34, y - r * 0.08);
+  cx.lineTo(x, y + r * 0.5);
+  cx.lineTo(x + r * 0.34, y - r * 0.08);
+  cx.lineWidth = Math.max(1.5, r * 0.13); cx.strokeStyle = '#e8e2d2'; cx.stroke();
+  // 頭
+  cx.beginPath(); cx.arc(x, y - r * 0.48, r * 0.5, 0, 7);
+  cx.fillStyle = '#f0cfa8'; cx.fill();
+  // 髪
+  cx.beginPath(); cx.arc(x, y - r * 0.52, r * 0.52, Math.PI * 1.02, Math.PI * 1.98);
+  cx.lineWidth = r * 0.22; cx.strokeStyle = '#181820'; cx.stroke();
+  // 鉢巻（額）
+  cx.beginPath(); cx.arc(x, y - r * 0.48, r * 0.5, Math.PI * 1.06, Math.PI * 1.94);
+  cx.lineWidth = r * 0.17; cx.strokeStyle = '#c8323c'; cx.stroke();
+  // 鋭い目
+  cx.lineWidth = Math.max(1.2, r * 0.08); cx.strokeStyle = '#141018'; cx.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    cx.beginPath();
+    cx.moveTo(x + s * r * 0.32, y - r * 0.52);
+    cx.lineTo(x + s * r * 0.1, y - r * 0.44);
+    cx.stroke();
+  }
+}
+
 // 画面外のボスの方向を画面端に示す矢印（広いタンクで見失わないため）
 function bossArrow(e, glyph) {
   const sx = e.x - G.camX + W / 2, sy = e.y - G.camY + H / 2;
@@ -1080,7 +1129,7 @@ function draw() {
     }
   }
 
-  // プレイヤー（麹坊や）。華やぎ中は金色のオーラ
+  // プレイヤー（蔵人）。華やぎ中は金色のオーラ
   const p = G.player;
   if (G.buffT > 0) {
     const au = cx.createRadialGradient(p.x, p.y, 6, p.x, p.y, 40);
@@ -1090,11 +1139,7 @@ function draw() {
     cx.fillStyle = au; cx.fill();
   }
   if (!(p.inv > 0 && Math.floor(G.t * 14) % 2)) {
-    cx.beginPath(); cx.arc(p.x, p.y, 16, 0, 7);
-    cx.fillStyle = '#fffdf5'; cx.fill();
-    cx.lineWidth = 2.5; cx.strokeStyle = '#8a7a55'; cx.stroke();
-    cx.fillStyle = '#4a3b22'; cx.font = 'bold 15px serif';
-    cx.fillText('麹', p.x, p.y + 1);
+    drawKurabito(p.x, p.y, 18);
   }
 
   // 櫂棒スイング
@@ -1451,14 +1496,10 @@ function drawTitle() {
     cx.fillText('🦠', ex, ey);
   }
   cx.restore();
-  // 麹坊やと櫂棒
+  // 蔵人と櫂棒
   const bob = Math.sin(G.t * 2.5) * 5;
-  cx.beginPath(); cx.arc(W / 2, H / 2 + 46 + bob, 24, 0, 7);
-  cx.fillStyle = '#fffdf5'; cx.fill();
-  cx.lineWidth = 3; cx.strokeStyle = '#8a7a55'; cx.stroke();
-  cx.fillStyle = '#4a3b22'; cx.font = 'bold 22px serif';
+  drawKurabito(W / 2, H / 2 + 46 + bob, 30);
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  cx.fillText('麹', W / 2, H / 2 + 47 + bob);
   cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
   cx.beginPath();
   cx.moveTo(W / 2 + 24, H / 2 + 40 + bob);
@@ -1473,7 +1514,7 @@ function drawTitle() {
   cx.fillText('― 醸して、なぎ倒せ。醸造ハクスラ無双 ―', W / 2, H * 0.16 + 104);
   // 世界観と記録
   cx.font = '15px serif'; cx.fillStyle = '#c8bda0';
-  cx.fillText('雑菌に冒された蔵々を、麹坊やが浄化して回る', W / 2, H - 150);
+  cx.fillText('雑菌に冒された蔵々を、若き蔵人が浄化して回る', W / 2, H - 150);
   const clearedN = Object.keys(META.regionClear || {}).length;
   if (META.best > 0 || clearedN > 0) {
     cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
@@ -1504,7 +1545,7 @@ function drawWorld() {
   cx.fillStyle = '#f2e9d4'; cx.font = 'bold 30px serif';
   cx.fillText('ワールドマップ ― どの地域を醸すか ―', W / 2, 56);
   cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
-  cx.fillText('雑菌に冒された全国の蔵々を、麹坊やが浄化して回る', W / 2, 86);
+  cx.fillText('雑菌に冒された全国の蔵々を、若き蔵人が浄化して回る', W / 2, 86);
   for (let i = 0; i < 10; i++) {
     const rg = REGIONS10[i], rc = worldCardRect(i);
     const sel = i === G.worldSel;
@@ -1627,15 +1668,11 @@ function drawMap() {
         cx.fillText('未会得の酵母（' + YEASTS[ny].short + '）の気配', p.x, p.y + 88);
       }
     }
-  // 麹坊や（現在の進軍先の上でぴょこぴょこ）
+  // 蔵人（現在の進軍先に立つ）
   const sp = nodePos(G.rank, G.selIdx, RANKS[G.rank].length);
   const bob = Math.sin(G.t * 5) * 4;
   const py = sp.y - (RANKS[G.rank][G.selIdx].boss ? 66 : 58) + bob;
-  cx.beginPath(); cx.arc(sp.x, py, 14, 0, 7);
-  cx.fillStyle = '#fffdf5'; cx.fill();
-  cx.lineWidth = 2; cx.strokeStyle = '#8a7a55'; cx.stroke();
-  cx.fillStyle = '#4a3b22'; cx.font = 'bold 13px serif';
-  cx.fillText('麹', sp.x, py + 1);
+  drawKurabito(sp.x, py, 13);
   // 装備（右下パネル）と装備ボタン・操作
   drawEquipUI(true);
   cx.fillStyle = 'rgba(20,12,8,0.55)';
