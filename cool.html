@@ -623,7 +623,7 @@ function attack() {
   p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
   const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
   const arc = SWEEP.arc * wt.arc;
-  G.swing = { t: 0, face: p.face, range, arc };
+  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito' };
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
@@ -1163,29 +1163,35 @@ function draw() {
   if (G.swing) {
     const pr = G.swing.t / SWEEP.time;
     const sa = G.swing.arc || SWEEP.arc;
-    const a0 = G.swing.face - sa / 2;
-    const a1 = a0 + sa * pr;
     const sr = G.swing.range || SWEEP.range;
-    // 剣閃：刃先ほど鋭く光る三日月ブレード
-    const tail = Math.min(sa * pr, 1.1);
-    cx.beginPath();
-    cx.arc(p.x, p.y, sr, a1 - tail, a1);
-    cx.arc(p.x, p.y, sr * 0.5, a1, a1 - tail, true);
-    cx.closePath();
-    const bg2 = cx.createRadialGradient(p.x, p.y, sr * 0.4, p.x, p.y, sr);
-    bg2.addColorStop(0, 'rgba(255,255,255,0)');
-    bg2.addColorStop(0.7, 'rgba(255,246,214,0.5)');
-    bg2.addColorStop(1, 'rgba(255,255,255,0.95)');
-    cx.fillStyle = bg2; cx.fill();
-    // 刃のエッジ
-    cx.beginPath(); cx.arc(p.x, p.y, sr, a1 - tail, a1);
-    cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(255,255,255,0.9)'; cx.stroke();
-    // 櫂棒本体
-    cx.strokeStyle = '#4a3018'; cx.lineWidth = 7; cx.lineCap = 'round';
-    cx.beginPath();
-    cx.moveTo(p.x + Math.cos(a1) * 14, p.y + Math.sin(a1) * 14);
-    cx.lineTo(p.x + Math.cos(a1) * (sr - 6), p.y + Math.sin(a1) * (sr - 6));
-    cx.stroke();
+    const twin = G.swing.type === 'soken';
+    const blades = twin
+      ? [{ from: G.swing.face - sa / 2, dir: 1 }, { from: G.swing.face + sa / 2, dir: -1 }]
+      : [{ from: G.swing.face - sa / 2, dir: 1 }];
+    for (const b of blades) { // 剣閃：刃先ほど鋭く光る三日月ブレード（双剣は2本が交差）
+      const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1);
+      const tail = Math.min(sa * pr * (twin ? 0.5 : 1), 1.1);
+      const s0 = b.dir === 1 ? lead - tail : lead;
+      const s1 = b.dir === 1 ? lead : lead + tail;
+      cx.beginPath();
+      cx.arc(p.x, p.y, sr, s0, s1);
+      cx.arc(p.x, p.y, sr * 0.5, s1, s0, true);
+      cx.closePath();
+      const bg2 = cx.createRadialGradient(p.x, p.y, sr * 0.4, p.x, p.y, sr);
+      bg2.addColorStop(0, 'rgba(255,255,255,0)');
+      bg2.addColorStop(0.7, 'rgba(255,246,214,0.5)');
+      bg2.addColorStop(1, 'rgba(255,255,255,0.95)');
+      cx.fillStyle = bg2; cx.fill();
+      // 刃のエッジ
+      cx.beginPath(); cx.arc(p.x, p.y, sr, s0, s1);
+      cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(255,255,255,0.9)'; cx.stroke();
+      // 櫂棒本体
+      cx.strokeStyle = '#4a3018'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+      cx.beginPath();
+      cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
+      cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
+      cx.stroke();
+    }
   }
 
   // パーティクル

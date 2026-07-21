@@ -622,7 +622,7 @@ function attack() {
   p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
   const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
   const arc = SWEEP.arc * wt.arc;
-  G.swing = { t: 0, face: p.face, range, arc };
+  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito' };
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
@@ -1142,23 +1142,28 @@ function draw() {
     drawKurabito(p.x, p.y, 18);
   }
 
-  // 櫂棒スイング
+  // 櫂棒スイング（双剣は2本が左右から交差する）
   if (G.swing) {
     const pr = G.swing.t / SWEEP.time;
     const sa = G.swing.arc || SWEEP.arc;
-    const a0 = G.swing.face - sa / 2;
-    const a1 = a0 + sa * pr;
     const sr = G.swing.range || SWEEP.range;
-    cx.beginPath();
-    cx.moveTo(p.x, p.y);
-    cx.arc(p.x, p.y, sr, a0, a1);
-    cx.closePath();
-    cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
-    cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
-    cx.beginPath();
-    cx.moveTo(p.x + Math.cos(a1) * 14, p.y + Math.sin(a1) * 14);
-    cx.lineTo(p.x + Math.cos(a1) * (sr - 6), p.y + Math.sin(a1) * (sr - 6));
-    cx.stroke();
+    const twin = G.swing.type === 'soken';
+    const blades = twin
+      ? [{ from: G.swing.face - sa / 2, dir: 1 }, { from: G.swing.face + sa / 2, dir: -1 }]
+      : [{ from: G.swing.face - sa / 2, dir: 1 }];
+    for (const b of blades) {
+      const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
+      cx.beginPath();
+      cx.moveTo(p.x, p.y);
+      cx.arc(p.x, p.y, sr, Math.min(b.from, lead), Math.max(b.from, lead));
+      cx.closePath();
+      cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+      cx.beginPath();
+      cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
+      cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
+      cx.stroke();
+    }
   }
 
   // パーティクル
