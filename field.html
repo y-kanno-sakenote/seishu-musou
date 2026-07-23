@@ -42,7 +42,9 @@ function resize() {
 resize();
 addEventListener('resize', resize);
 
-const ARENA = { x: W / 2, y: H / 2, r: 1200 }; // シームレス試作：広域タンクに4蔵を配置（カメラ追従）
+const ARENA = { x: W / 2, y: H / 2 }; // 酒蔵の里の中心（カメラ基準・4蔵を配置）
+const FIELD = { w: 2600, h: 1900 };   // シームレス試作：矩形フィールド（酒蔵の里）
+const HALF_W = FIELD.w / 2, HALF_H = FIELD.h / 2; // 半幅1300・半高950
 
 // ---- メタ進行（周回で持ち越す分。localStorage保存）----
 const META_KEY = 'moromi_meta';
@@ -267,7 +269,7 @@ const KURA_LAYOUT = [
   { rank: 0, name: '先鋒の蔵', dx: 0,    dy: 520,  icon: '🏚', size: 40 }, // 中央下
   { rank: 1, name: '泥蔵',    dx: -650, dy: 0,    icon: '🏚', size: 40 }, // 左中
   { rank: 2, name: '寒蔵',    dx: 650,  dy: 0,    icon: '🏚', size: 40 }, // 右中
-  { rank: 3, name: '総本山',  dx: 0,    dy: -720, icon: '🏯', size: 52 }, // 中央上
+  { rank: 3, name: '総本山',  dx: 0,    dy: -680, icon: '🏯', size: 52 }, // 中央上（塀の内側に収める）
 ];
 function kuraLevel() { return DIFFS[G.diff].scale + G.rank + 1; } // 敵スケール＝難易度＋進軍段
 function nodeYeast(rank) { // この地域・このステージで会得できる酵母
@@ -549,9 +551,9 @@ function genObstacles() {
   const start = { x: ARENA.x, y: ARENA.y + 850 }; // プレイヤー開始位置は空ける
   for (let k = 0; k < n; k++) {
     for (let t = 0; t < 24; t++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = 150 + Math.random() * (ARENA.r - 240); // 壁際は空ける
-      const x = ARENA.x + Math.cos(a) * d, y = ARENA.y + Math.sin(a) * d;
+      const m = 120; // 塀の縁から120px内側まで
+      const x = ARENA.x - HALF_W + m + Math.random() * (FIELD.w - 2 * m);
+      const y = ARENA.y - HALF_H + m + Math.random() * (FIELD.h - 2 * m);
       const r = 45 + Math.random() * 45;
       if (G.kuras.some(z => Math.hypot(z.x - x, z.y - y) < 260 + r)) continue; // 蔵ゾーン中心260px以内は避ける
       if (Math.hypot(start.x - x, start.y - y) < 130 + r) continue;
@@ -577,15 +579,17 @@ function pushOut(ent, rad) { // 円コライダーからの押し出し
 // プレイヤーの画面外周リング（タンク内）に湧かせる。壁際でも反対側で見つかるよう数回試す
 function spawnPosNearPlayer(minD, maxD) {
   const p = G.player;
+  const lx = ARENA.x - HALF_W + 12, rx = ARENA.x + HALF_W - 12;
+  const ty = ARENA.y - HALF_H + 12, by = ARENA.y + HALF_H - 12;
   for (let tries = 0; tries < 8; tries++) {
     const a = Math.random() * Math.PI * 2;
     const d = minD + Math.random() * (maxD - minD);
     const x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
-    if (Math.hypot(x - ARENA.x, y - ARENA.y) < ARENA.r - 12 &&
+    if (x > lx && x < rx && y > ty && y < by &&
         G.obstacles.every(o => Math.hypot(x - o.x, y - o.y) > o.r + 20)) return { x, y };
   }
-  const a = Math.random() * Math.PI * 2; // 保険：タンクの縁
-  return { x: ARENA.x + Math.cos(a) * (ARENA.r - 12), y: ARENA.y + Math.sin(a) * (ARENA.r - 12) };
+  // 保険：プレイヤー位置を場内へクランプ
+  return { x: Math.max(lx, Math.min(rx, p.x)), y: Math.max(ty, Math.min(by, p.y)) };
 }
 
 function spawnEnemy(elite, near) {
@@ -879,13 +883,10 @@ function update(dt) {
     p.y += my / l * spd * dt;
     p.face = Math.atan2(my, mx);
   }
-  const pd = Math.hypot(p.x - ARENA.x, p.y - ARENA.y);
-  const lim = ARENA.r - 18;
-  if (pd > lim) {
-    p.x = ARENA.x + (p.x - ARENA.x) / pd * lim;
-    p.y = ARENA.y + (p.y - ARENA.y) / pd * lim;
-  }
-  pushOut(p, 14); // 蒸米の島は通れない
+  const m = 18; // 塀の内側マージン（矩形クランプ）
+  p.x = Math.max(ARENA.x - HALF_W + m, Math.min(ARENA.x + HALF_W - m, p.x));
+  p.y = Math.max(ARENA.y - HALF_H + m, Math.min(ARENA.y + HALF_H - m, p.y));
+  pushOut(p, 14); // 米俵の山は通れない
   G.camX = p.x; G.camY = p.y; // カメラはプレイヤー追従
 
   // 攻撃
@@ -1080,32 +1081,47 @@ function draw() {
   const shy = G.shake > 0 ? (Math.random() - 0.5) * G.shake : 0;
   cx.translate(W / 2 - G.camX + shx, H / 2 - G.camY + shy); // カメラ変換（ワールド座標→画面）
 
-  // タンク
-  cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r + 14, 0, 7);
-  cx.fillStyle = '#3a2e24'; cx.fill();
-  const grad = cx.createRadialGradient(ARENA.x, ARENA.y - 60, 40, ARENA.x, ARENA.y, ARENA.r);
-  grad.addColorStop(0, '#f2e9d4'); grad.addColorStop(1, '#ddceac');
-  cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r, 0, 7);
-  cx.fillStyle = grad; cx.fill();
-  // もろみの泡
-  cx.fillStyle = 'rgba(255,255,255,0.35)';
+  // 酒蔵の里（矩形フィールド）
+  const FL = ARENA.x - HALF_W, FT = ARENA.y - HALF_H; // 左上
+  // 塀の外側（暗い土）
+  cx.fillStyle = '#3a2e24';
+  cx.fillRect(FL - 14, FT - 14, FIELD.w + 28, FIELD.h + 28);
+  // 土の地面（中央は明るく、縁は落ち着いた土色）
+  const grad = cx.createRadialGradient(ARENA.x, ARENA.y - 60, 60, ARENA.x, ARENA.y, Math.max(HALF_W, HALF_H));
+  grad.addColorStop(0, '#c9b183'); grad.addColorStop(1, '#a68f63');
+  cx.fillStyle = grad;
+  cx.fillRect(FL, FT, FIELD.w, FIELD.h);
+  // 草むらの点（緑がかった低アルファの点をまばらに）
+  cx.fillStyle = 'rgba(96,128,58,0.20)';
   for (let i = 0; i < 90; i++) {
-    const a = i * 2.62 + G.t * 0.13, rr = (i * 53.7) % ARENA.r * 0.92;
+    const gx = FL + ((i * 137.508) % FIELD.w), gy = FT + ((i * 219.317) % FIELD.h);
     cx.beginPath();
-    cx.arc(ARENA.x + Math.cos(a) * rr, ARENA.y + Math.sin(a) * rr, 3 + (i % 4), 0, 7);
+    cx.arc(gx, gy, 3 + (i % 4), 0, 7);
     cx.fill();
   }
+  // 里の塀（外周の濃い木塀＋等間隔の柱）
+  const FR = FL + FIELD.w, FB = FT + FIELD.h;
+  cx.strokeStyle = '#5a3d24'; cx.lineWidth = 16; cx.lineJoin = 'miter';
+  cx.strokeRect(FL, FT, FIELD.w, FIELD.h);
+  cx.strokeStyle = '#3d2917'; cx.lineWidth = 6; cx.lineCap = 'butt';
+  const gap = 130, pl = 11; // 柱の間隔と長さの半分
+  cx.beginPath();
+  for (let x = FL + gap; x < FR; x += gap) { cx.moveTo(x, FT - pl); cx.lineTo(x, FT + pl); cx.moveTo(x, FB - pl); cx.lineTo(x, FB + pl); }
+  for (let y = FT + gap; y < FB; y += gap) { cx.moveTo(FL - pl, y); cx.lineTo(FL + pl, y); cx.moveTo(FR - pl, y); cx.lineTo(FR + pl, y); }
+  cx.stroke();
 
-  // 凍結（6号）：もろみが静まる
+  // 凍結（6号）：里が静まる
   if (G.freezeT > 0) {
-    cx.beginPath(); cx.arc(ARENA.x, ARENA.y, ARENA.r, 0, 7);
     cx.fillStyle = 'rgba(150,205,255,' + Math.min(0.10 * G.freezeT, 0.25) + ')';
-    cx.fill();
+    cx.fillRect(FL, FT, FIELD.w, FIELD.h);
   }
 
   // 蔵ゾーン（4つの蔵の勢力圏）：cleared=白く浄化／ready=通常／locked=暗く＋🔒
   for (const k of G.kuras) {
     const active = k === G.activeKura;
+    // 蔵の敷地（土間）：ゾーン内の地面をうっすら別色にして「蔵の敷地」を示す
+    cx.beginPath(); cx.arc(k.x, k.y, k.r, 0, 7);
+    cx.fillStyle = 'rgba(150,124,90,0.28)'; cx.fill();
     cx.save();
     cx.beginPath(); cx.arc(k.x, k.y, k.r, 0, 7);
     if (k.state === 'cleared') {
@@ -1143,19 +1159,24 @@ function draw() {
     cx.fillText(k.name + (k.state === 'cleared' ? '（浄化済）' : ''), k.x, k.y + k.size * 0.9 + 14);
   }
 
-  // 蒸米の島（障害物）
+  // 米俵の山（障害物）：藁色の楕円の山＋俵の縄目（コライダーは円のまま）
   for (const o of G.obstacles) {
-    const og = cx.createRadialGradient(o.x - o.r * 0.3, o.y - o.r * 0.3, o.r * 0.2, o.x, o.y, o.r);
-    og.addColorStop(0, '#fbf6e8'); og.addColorStop(1, '#e2d5b4');
-    cx.beginPath(); cx.arc(o.x, o.y, o.r, 0, 7);
+    const ry = o.r * 0.82; // 俵の山は横長の楕円
+    const og = cx.createRadialGradient(o.x - o.r * 0.3, o.y - ry * 0.4, o.r * 0.2, o.x, o.y, o.r);
+    og.addColorStop(0, '#e6cf8c'); og.addColorStop(1, '#c2a259'); // 黄土〜藁色
+    cx.beginPath(); cx.ellipse(o.x, o.y, o.r, ry, 0, 0, 7);
     cx.fillStyle = og; cx.fill();
-    cx.strokeStyle = 'rgba(140,120,85,0.35)'; cx.lineWidth = 3; cx.stroke();
-    cx.fillStyle = 'rgba(255,255,255,0.75)';
-    for (let i = 0; i < 6; i++) {
-      const aa = o.seed + i * 1.05, rr2 = o.r * (0.18 + (i % 3) * 0.22);
+    cx.strokeStyle = 'rgba(120,92,48,0.5)'; cx.lineWidth = 3; cx.stroke();
+    // 俵の縄目（横線2〜3本）
+    cx.strokeStyle = 'rgba(120,92,48,0.55)'; cx.lineWidth = 2.5; cx.lineCap = 'round';
+    const rows = 3;
+    for (let i = 1; i <= rows; i++) {
+      const fy = -ry + (2 * ry) * i / (rows + 1); // 楕円内のy位置
+      const half = o.r * Math.sqrt(Math.max(0, 1 - (fy / ry) * (fy / ry))) * 0.92;
       cx.beginPath();
-      cx.ellipse(o.x + Math.cos(aa) * rr2, o.y + Math.sin(aa) * rr2, 5, 3, aa, 0, 7);
-      cx.fill();
+      cx.moveTo(o.x - half, o.y + fy);
+      cx.lineTo(o.x + half, o.y + fy);
+      cx.stroke();
     }
   }
 
