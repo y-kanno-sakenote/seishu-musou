@@ -457,6 +457,7 @@ const G = {
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [],
   swing: null, spawnT: 0,
+  comboStep: 0, lastAtkT: -99, // 連舞（4段コンボ）の現在段と最終攻撃時刻
   hiochi: null, alarm: 0,
   riceBoss: null, riceBossDone: false, // 洗脳された米武将（浄化するまで上槽できない）
   pendingWeapon: null, wchoice: 0, // 火落ち菌の戦利品（麹武器）と上槽での選択
@@ -492,6 +493,7 @@ function buildField() {
   G.glucose = 0; G.shake = 0;
   G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
   G.swing = null; G.spawnT = 0; G.alarm = 0;
+  G.comboStep = 0; G.lastAtkT = -99;
   G.freezeT = 0; G.beam = null;
   G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0;
   G.regionGauge = 0; G.runLoot = []; G.fieldStart = G.t;
@@ -604,6 +606,7 @@ function spawnEnemy(elite, near) {
     hp: elite ? 60 : 10,
     sp: (elite ? 34 : 46 + Math.random() * 26) * spd,
     flash: 0,
+    flying: 0, flyHit: [], spin: 0, // 連舞フィニッシュの吹き飛び状態
   };
   G.enemies.push(e);
 }
@@ -676,17 +679,42 @@ function addAlcohol(v) {
 // ---- 攻撃 ----
 const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
 
+// 連舞（れんぶ）：4段コンボ。数値はすべて叩き台（sim/実機で詰める）
+const COMBO = {
+  win: 2.2,   // 連が続く猶予＝実効atkCd×2.2以内に次の攻撃
+  arc3: 1.25, // 3段目の範囲角倍率
+  dmg3: 1.1,  // 3段目の威力倍率
+  dmg4: 2.0,  // フィニッシュの威力倍率
+  kb4: 2.5,   // フィニッシュのノックバック倍率（ボス級は除外）
+  range4: 1.15, // フィニッシュの剣閃（＝間合い）倍率
+  step4: 40,  // フィニッシュの踏み込み距離px
+  fly: 0.5,   // 吹き飛び状態の秒数
+};
+
 function attack() {
   const p = G.player;
   const wt = wtypeOf(META.weapon); // 武器種：大刀=標準／双剣=速い小範囲／長槍=直線長リーチ
-  p.atkCd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
-  const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
-  const arc = SWEEP.arc * wt.arc;
-  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito' };
+  const cd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
+  p.atkCd = cd;
+  // 連の段送り：前回攻撃からの経過が実効cd×2.2以内なら次の段へ、超えていれば1段目へ戻す
+  if (G.lastAtkT >= 0 && G.t - G.lastAtkT <= cd * COMBO.win) G.comboStep = (G.comboStep + 1) % 4;
+  else G.comboStep = 0;
+  G.lastAtkT = G.t;
+  const step = G.comboStep;
+  const finish = step === 3;
+  const dir = step === 1 ? -1 : 1; // 2段目は左薙ぎ（スイング方向を反転）
+  const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1) * (finish ? COMBO.range4 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
+  const arc = SWEEP.arc * wt.arc * (step === 2 ? COMBO.arc3 : 1); // 3段目は広めの薙ぎ
+  if (finish) { // フィニッシュ：face方向へ踏み込んでから斬る（壁・障害物のクランプは次フレームの通常処理に任せる）
+    p.x += Math.cos(p.face) * COMBO.step4;
+    p.y += Math.sin(p.face) * COMBO.step4;
+  }
+  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
-  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1);
+  const stepMul = step === 2 ? COMBO.dmg3 : finish ? COMBO.dmg4 : 1;
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul;
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
@@ -697,12 +725,15 @@ function attack() {
     // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
     e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1); e.flash = 0.12; hit++;
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
-    const kb = (e.hiochi || e.riceBoss) ? 30 : e.elite ? 90 : 260;
+    const boss = e.hiochi || e.riceBoss;
+    const kb = (boss ? 30 : e.elite ? 90 : 260) * (finish && !boss ? COMBO.kb4 : 1); // ボス級のノックバック耐性は現行のまま
     e.kx += Math.cos(p.face + da * 0.4) * kb;
     e.ky += Math.sin(p.face + da * 0.4) * kb;
+    if (finish && !boss) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; } // 吹き飛び：他の雑魚を巻き込む
   }
   if (hit) {
     sfx('hit');
+    if (finish) { sfx('kill'); G.hitstop = 0.1; } // フィニッシュの手応え（新規音は作らない）
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
     // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
     G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
@@ -934,10 +965,27 @@ function update(dt) {
     }
     if (e.stunT > 0) continue; // 9号のスタン：動けない（再生はする）
     const dx = p.x - e.x, dy = p.y - e.y, d = Math.hypot(dx, dy) || 1;
-    e.x += (dx / d * e.sp + e.kx) * dt;
-    e.y += (dy / d * e.sp + e.ky) * dt;
+    const chase = e.flying > 0 ? 0 : 1; // 吹き飛び中は自分では歩かない（ノックバックに身を任せる）
+    e.x += (dx / d * e.sp * chase + e.kx) * dt;
+    e.y += (dy / d * e.sp * chase + e.ky) * dt;
     e.kx *= Math.pow(0.005, dt); e.ky *= Math.pow(0.005, dt);
     pushOut(e, e.r * 0.7); // 蒸米の島を回り込ませる（多少の重なりは許容）
+    // 吹き飛び中の巻き込み：ぶつかった雑魚に小ダメージ＋同方向へ弾く（連鎖はさせない）
+    if (e.flying > 0) {
+      e.flying -= dt;
+      const kl = Math.hypot(e.kx, e.ky) || 1;
+      e.spin += dt * 13 * (e.kx >= 0 ? 1 : -1); // 進行方向に応じてくるくる回る
+      for (const o of G.enemies) {
+        if (o === e || o.hiochi || o.riceBoss || o.hp <= 0) continue; // ボス級は巻き込まれない
+        if (e.flyHit.indexOf(o) >= 0) continue; // 1回の飛行で同じ相手には1度だけ
+        if (Math.hypot(o.x - e.x, o.y - e.y) >= e.r + o.r) continue;
+        e.flyHit.push(o);
+        o.hp -= weaponDmg() * 0.5; o.flash = 0.12; // 巻き込みダメージ＝武器威力の50%（叩き台）
+        o.kx += e.kx / kl * 220; o.ky += e.ky / kl * 220; // 相手にflyingは付けない＝多段連鎖しない
+        G.shake = Math.min(G.shake + 1.5, 9);
+      }
+      if (e.flying <= 0) { e.flying = 0; e.flyHit = []; e.spin = 0; }
+    }
     // プレイヤー接触（白麹：20%で弾く）
     if (d < e.r + 14 && p.inv <= 0) {
       if (kojiIs('white') && Math.random() < 0.2) {
@@ -1211,9 +1259,12 @@ function draw() {
     }
     const glyph = e.hiochi ? '👹' : e.riceBoss ? '🍙' : e.elite ? '😈' : '🦠';
     cx.font = (e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22) + 'px serif';
-    if (e.flash > 0) {
-      cx.save(); cx.filter = 'brightness(3)';
-      cx.fillText(glyph, e.x, e.y + wob);
+    const spin = e.flying > 0 ? (e.spin || 0) : 0; // 吹き飛び中はくるくる回る
+    if (e.flash > 0 || spin) {
+      cx.save();
+      if (e.flash > 0) cx.filter = 'brightness(3)';
+      if (spin) { cx.translate(e.x, e.y + wob); cx.rotate(spin); cx.fillText(glyph, 0, 0); }
+      else cx.fillText(glyph, e.x, e.y + wob);
       cx.restore();
     } else {
       cx.fillText(glyph, e.x, e.y + wob);
@@ -1246,6 +1297,9 @@ function draw() {
     const sr = G.swing.range || SWEEP.range;
     const type = G.swing.type;
     const face = G.swing.face;
+    const sdir = G.swing.dir || 1; // 連の段によるスイング方向（2段目＝左薙ぎ）
+    const fin = !!G.swing.finish;
+    const trail = fin ? 'rgba(255,255,255,0.72)' : 'rgba(255,240,190,0.45)'; // フィニッシュだけ白く強い光跡
     if (type === 'yari') {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
@@ -1262,9 +1316,9 @@ function draw() {
         const ox = nx * off, oy = ny * off;
         const d0 = ext * 0.4, d1 = ext;
         const g = cx.createLinearGradient(p.x + cos * d0 + ox, p.y + sin * d0 + oy, p.x + cos * d1 + ox, p.y + sin * d1 + oy);
-        g.addColorStop(0, 'rgba(255,240,190,0)');
-        g.addColorStop(1, 'rgba(255,240,190,0.75)');
-        cx.strokeStyle = g; cx.lineWidth = off === 0 ? 2 : 1.4;
+        g.addColorStop(0, fin ? 'rgba(255,255,255,0)' : 'rgba(255,240,190,0)');
+        g.addColorStop(1, fin ? 'rgba(255,255,255,0.95)' : 'rgba(255,240,190,0.75)');
+        cx.strokeStyle = g; cx.lineWidth = (off === 0 ? 2 : 1.4) + (fin ? 1.2 : 0);
         cx.beginPath();
         cx.moveTo(p.x + cos * d0 + ox, p.y + sin * d0 + oy);
         cx.lineTo(p.x + cos * d1 + ox, p.y + sin * d1 + oy);
@@ -1286,13 +1340,13 @@ function draw() {
         // 叩きつけ：柄が逆方向からfaceへ振り下ろされる
         if (!G.swing.impacted) { G.shake = Math.max(G.shake, 8); G.swing.impacted = true; } // 着弾の一撃は一度だけ
         const k = (pr - 0.4) / 0.6;
-        const ang = face + Math.PI * (1 - k);
+        const ang = face + sdir * Math.PI * (1 - k); // 振り下ろす向きは連の段で反転
         // 光跡（振り下ろしの扇）
         cx.beginPath();
         cx.moveTo(p.x, p.y);
         cx.arc(p.x, p.y, sr, Math.min(ang, face), Math.max(ang, face));
         cx.closePath();
-        cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
+        cx.fillStyle = trail; cx.fill();
         // 柄
         cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
         cx.beginPath();
@@ -1309,31 +1363,33 @@ function draw() {
       }
     } else if (type === 'naginata') {
       // 薙刀：光跡と柄が全周1回転する
-      const lead = face - Math.PI + 2 * Math.PI * pr;
+      const lead = face - Math.PI + sdir * 2 * Math.PI * pr; // 回転の向きは連の段で反転
       const tail = Math.min(1.4, 2 * Math.PI * pr); // lead-tail〜lead の扇で追従
+      const t0 = lead - sdir * tail;
       cx.beginPath();
       cx.moveTo(p.x, p.y);
-      cx.arc(p.x, p.y, sr, lead - tail, lead);
+      cx.arc(p.x, p.y, sr, Math.min(t0, lead), Math.max(t0, lead));
       cx.closePath();
-      cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
-      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
+      cx.fillStyle = trail; cx.fill();
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = fin ? 9 : 7; cx.lineCap = 'round';
       cx.beginPath();
       cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
       cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
       cx.stroke();
     } else {
       const twin = G.swing.type === 'soken';
+      // 薙ぎ出しの端と進む向きを sdir で反転（2段目＝左薙ぎ）。双剣の交差はそのまま
       const blades = twin
-        ? [{ from: G.swing.face - sa / 2, dir: 1 }, { from: G.swing.face + sa / 2, dir: -1 }]
-        : [{ from: G.swing.face - sa / 2, dir: 1 }];
+        ? [{ from: face - sdir * sa / 2, dir: sdir }, { from: face + sdir * sa / 2, dir: -sdir }]
+        : [{ from: face - sdir * sa / 2, dir: sdir }];
       for (const b of blades) {
         const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
         cx.beginPath();
         cx.moveTo(p.x, p.y);
         cx.arc(p.x, p.y, sr, Math.min(b.from, lead), Math.max(b.from, lead));
         cx.closePath();
-        cx.fillStyle = 'rgba(255,240,190,0.45)'; cx.fill();
-        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+        cx.fillStyle = trail; cx.fill();
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = (twin ? 5 : 7) + (fin ? 2 : 0); cx.lineCap = 'round';
         cx.beginPath();
         cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
         cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
