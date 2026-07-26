@@ -506,7 +506,7 @@ function buildField() {
     alcohol: 0, hiochiDone: false, riceBossDone: false, hiochi: null, riceBoss: null,
   }));
   genObstacles(); // 蒸米の島を全域に配置（蔵ゾーン中心を避ける）
-  G.player = { x: ARENA.x, y: ARENA.y + 850, face: -Math.PI / 2, hp: playerMaxHp(), inv: 0, atkCd: 0 };
+  G.player = { x: ARENA.x, y: ARENA.y + 850, face: -Math.PI / 2, hp: playerMaxHp(), inv: 0, atkCd: 0, dashT: 0, dashVx: 0, dashVy: 0 };
   G.camX = G.player.x; G.camY = G.player.y;
   for (let i = 0; i < 30; i++) spawnEnemy(false, true); // 開幕から見える範囲に群れがいる
   addText(G.player.x, G.player.y - 150, regionName() + '〔' + DIFFS[G.diff].name + '〕・シームレス仕込み', '#f2e9d4', 26);
@@ -687,7 +687,8 @@ const COMBO = {
   dmg4: 2.0,  // フィニッシュの威力倍率
   kb4: 2.5,   // フィニッシュのノックバック倍率（ボス級は除外）
   range4: 1.15, // フィニッシュの剣閃（＝間合い）倍率
-  step4: 40,  // フィニッシュの踏み込み距離px
+  step4: 40,  // フィニッシュの踏み込み距離px（ヒット時のみ・0.1秒かけて滑らかに消化）
+  dashT: 0.1, // 踏み込みにかける時間（秒）
   fly: 0.5,   // 吹き飛び状態の秒数
 };
 
@@ -705,11 +706,7 @@ function attack() {
   const dir = step === 1 ? -1 : 1; // 2段目は左薙ぎ（スイング方向を反転）
   const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1) * (finish ? COMBO.range4 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
   const arc = SWEEP.arc * wt.arc * (step === 2 ? COMBO.arc3 : 1); // 3段目は広めの薙ぎ
-  if (finish) { // フィニッシュ：face方向へ踏み込んでから斬る（壁・障害物のクランプは次フレームの通常処理に任せる）
-    p.x += Math.cos(p.face) * COMBO.step4;
-    p.y += Math.sin(p.face) * COMBO.step4;
-  }
-  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
+  G.swing ={ t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
@@ -733,7 +730,13 @@ function attack() {
   }
   if (hit) {
     sfx('hit');
-    if (finish) { sfx('kill'); G.hitstop = 0.1; } // フィニッシュの手応え（新規音は作らない）
+    if (finish) { // フィニッシュの手応え（新規音は作らない）
+      sfx('kill'); G.hitstop = 0.1;
+      // 踏み込みは「当たったときだけ」。瞬間移動せず0.1秒かけて速度で消化する（空振りでは前進しない）
+      p.dashT = COMBO.dashT;
+      p.dashVx = Math.cos(p.face) * COMBO.step4 / COMBO.dashT;
+      p.dashVy = Math.sin(p.face) * COMBO.step4 / COMBO.dashT;
+    }
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
     // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
     G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
@@ -913,6 +916,14 @@ function update(dt) {
     p.x += mx / l * spd * dt;
     p.y += my / l * spd * dt;
     p.face = Math.atan2(my, mx);
+  }
+  // 連舞フィニッシュの踏み込み（当たったときだけ／0.1秒かけて滑らかに前へ）
+  if (p.dashT > 0) {
+    const ddt = Math.min(dt, p.dashT);
+    p.x += p.dashVx * ddt;
+    p.y += p.dashVy * ddt;
+    p.dashT -= dt;
+    if (p.dashT <= 0) { p.dashT = 0; p.dashVx = 0; p.dashVy = 0; }
   }
   const m = 18; // 塀の内側マージン（矩形クランプ）
   p.x = Math.max(ARENA.x - HALF_W + m, Math.min(ARENA.x + HALF_W - m, p.x));
@@ -1259,16 +1270,20 @@ function draw() {
     }
     const glyph = e.hiochi ? '👹' : e.riceBoss ? '🍙' : e.elite ? '😈' : '🦠';
     cx.font = (e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22) + 'px serif';
-    const spin = e.flying > 0 ? (e.spin || 0) : 0; // 吹き飛び中はくるくる回る
-    if (e.flash > 0 || spin) {
-      cx.save();
-      if (e.flash > 0) cx.filter = 'brightness(3)';
-      if (spin) { cx.translate(e.x, e.y + wob); cx.rotate(spin); cx.fillText(glyph, 0, 0); }
-      else cx.fillText(glyph, e.x, e.y + wob);
-      cx.restore();
+    // 吹き飛び中はくるくる回す。ただし白フラッシュ（brightness）は掛けない：
+    // 回転＋白抜けが重なると「色のついていない別キャラ」に見えるため（回転自体は色を落とさない）
+    const flying = e.flying > 0;
+    const flash = e.flash > 0 && !flying;
+    cx.save(); // save/restoreは常に対で通す（状態漏れ防止）
+    if (flash) cx.filter = 'brightness(3)';
+    if (flying) {
+      cx.translate(e.x, e.y + wob);
+      cx.rotate(e.spin || 0);
+      cx.fillText(glyph, 0, 0);
     } else {
       cx.fillText(glyph, e.x, e.y + wob);
     }
+    cx.restore();
     if (e.hiochi || e.riceBoss) { // ボスHPバー
       cx.fillStyle = 'rgba(20,10,8,0.6)';
       cx.fillRect(e.x - 32, e.y - 48, 64, 6);
