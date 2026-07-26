@@ -179,8 +179,9 @@ function audioInit() {
   if (AC && AC.state === 'suspended') AC.resume();
 }
 const sfxLast = {};
-function sfx(type) {
+function sfx(type, mul) { // mul=音程倍率（連舞の段で打撃音を上げる。既存の音素材はそのまま）
   if (!AC || META.mute) return;
+  mul = mul || 1;
   const now = performance.now();
   if (sfxLast[type] && now - sfxLast[type] < 60) return; // 鳴りすぎ防止
   sfxLast[type] = now;
@@ -208,7 +209,7 @@ function sfx(type) {
     s.connect(g); g.connect(AC.destination);
     s.start(t);
   };
-  if (type === 'hit') tone('square', 240 + Math.random() * 60, 120, 0.06, 0.05);
+  if (type === 'hit') tone('square', (240 + Math.random() * 60) * mul, 120 * mul, 0.06, 0.05);
   else if (type === 'kill') tone('triangle', 560 + Math.random() * 140, 200, 0.08, 0.07);
   else if (type === 'ferment') { noise(0.35, 0.14); tone('sine', 150, 40, 0.45, 0.2); }
   else if (type === 'alarm') { tone('sawtooth', 700, 690, 0.15, 0.09); tone('sawtooth', 520, 512, 0.15, 0.09, 0.18); }
@@ -679,19 +680,34 @@ function addAlcohol(v) {
 // ---- 攻撃 ----
 const SWEEP = { range: 105, arc: Math.PI * 1.25, time: 0.16, cd: 0.26 };
 
-// 連舞（れんぶ）：4段コンボ。数値はすべて叩き台（sim/実機で詰める）
+// 連舞（れんぶ）：無双の文法「単発・単発・単発・範囲」。数値はすべて叩き台（sim/実機で詰める）
 const COMBO = {
-  win: 2.2,   // 連が続く猶予＝実効atkCd×2.2以内に次の攻撃
-  arc3: 1.25, // 3段目の範囲角倍率
-  dmg3: 1.1,  // 3段目の威力倍率
-  dmg4: 2.0,  // フィニッシュの威力倍率
-  kb4: 2.5,   // フィニッシュのノックバック倍率（ボス級は除外）
-  range4: 1.15, // フィニッシュの剣閃（＝間合い）倍率
-  step4: 40,  // フィニッシュの踏み込み距離px（ヒット時のみ・0.1秒かけて滑らかに消化）
-  dashT: 0.1, // 踏み込みにかける時間（秒）
-  fly: 0.5,   // 吹き飛び状態の秒数
-  corpse: 0.2,      // 死に体（フィニッシュ撃破の見た目）が飛んでいる秒数
-  corpseDecay: 0.05, // 死に体のノックバック減衰（敵の0.005より緩め＝遠くまで飛ぶ）
+  win: 2.2,        // 連が続く猶予＝実効atkCd×2.2以内に次の攻撃
+  arc1: Math.PI / 4,   // 1・2段目＝単発の刻み（45°）
+  range1: 0.9,         // 1・2段目の射程倍率
+  arc3: 0.61,          // 3段目＝踏み込み突き（35°）
+  range3: 1.3,         // 3段目の射程倍率（長め）
+  dmg3: 1.1,           // 3段目の威力倍率
+  step3: 25,           // 3段目の踏み込みpx（空振りでも出る＝「踏み込んで刻む」表現）
+  dashT3: 0.08,        // 3段目の踏み込みにかける時間（秒）
+  arc4: Math.PI * 2,   // 4段目＝全周360°の一掃（全武器共通）
+  range4: 1.25,        // 4段目の射程倍率
+  dmg4: 2.0,           // 4段目の威力倍率
+  kb4: 2.5,            // 4段目のノックバック倍率（ボス級は除外）
+  glu4: 1.0,           // 4段目ヒット時の糖化補正。実測では1蔵あたりの発酵回数が修正前と同じ3回だったので補正なし（増やしたい時だけ上げる）
+  pitch: [1, 1.25, 1.5, 2], // 打撃音の音程（ド→ミ→ソ→高いド）
+  fly: 0.5,            // 吹き飛び状態の秒数
+  corpse: 0.2,         // 死に体（フィニッシュ撃破の見た目）が飛んでいる秒数
+  corpseDecay: 0.05,   // 死に体のノックバック減衰（敵の0.005より緩め＝遠くまで飛ぶ）
+};
+
+// 単発3段での武器の個性（WTYPESの係数にさらに乗る。4段目の一掃には掛からない）
+const SINGLE = {
+  daito:    { arc: 1,   range: 1,    dmg: 1,    hits: 1 },              // 標準
+  soken:    { arc: 0.9, range: 0.9,  dmg: 1,    hits: 2, hit2: 0.6 },   // 双剣：同じ敵に2発目（威力60%）
+  yari:     { arc: 0.8, range: 1.25, dmg: 1,    hits: 1 },              // 長槍：細く長い突き
+  otsuchi:  { arc: 1.1, range: 1,    dmg: 1.25, hits: 1 },              // 大槌：遅く重い
+  naginata: { arc: 1.5, range: 1,    dmg: 1,    hits: 1 },              // 薙刀：単発でも角度広め
 };
 
 function attack() {
@@ -705,15 +721,32 @@ function attack() {
   G.lastAtkT = G.t;
   const step = G.comboStep;
   const finish = step === 3;
-  const dir = step === 1 ? -1 : 1; // 2段目は左薙ぎ（スイング方向を反転）
-  const range = SWEEP.range * wt.range * (styleIs('box') ? 1.5 : 1) * (finish ? COMBO.range4 : 1); // 箱麹：範囲1.5倍（＝糖化効率）
-  const arc = SWEEP.arc * wt.arc * (step === 2 ? COMBO.arc3 : 1); // 3段目は広めの薙ぎ
-  G.swing ={ t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
+  const dir = step === 1 ? -1 : 1; // 2段目は逆手（スイング方向を反転）
+  const sg = SINGLE[(META.weapon && META.weapon.type) || 'daito'] || SINGLE.daito;
+  const box = styleIs('box') ? 1.5 : 1; // 箱麹：範囲1.5倍（＝糖化効率）
+  // 段ごとの間合いと角度：1〜3段は前方だけの単発、4段目だけ全周の一掃
+  let range, arc;
+  if (finish) {
+    range = SWEEP.range * wt.range * box * COMBO.range4;
+    arc = COMBO.arc4; // 全周は全武器共通（射程だけ武器種係数が乗る）
+  } else if (step === 2) {
+    range = SWEEP.range * wt.range * box * COMBO.range3 * sg.range;
+    arc = COMBO.arc3 * wt.arc * sg.arc;
+  } else {
+    range = SWEEP.range * wt.range * box * COMBO.range1 * sg.range;
+    arc = COMBO.arc1 * wt.arc * sg.arc;
+  }
+  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
+  if (step === 2) { // 3段目：ヒットの有無に関わらず踏み込む（速度で消化・壁クランプは通常処理）
+    p.dashT = COMBO.dashT3;
+    p.dashVx = Math.cos(p.face) * COMBO.step3 / COMBO.dashT3;
+    p.dashVy = Math.sin(p.face) * COMBO.step3 / COMBO.dashT3;
+  }
   let hit = 0;
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
   const stepMul = step === 2 ? COMBO.dmg3 : finish ? COMBO.dmg4 : 1;
-  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul;
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul * (finish ? 1 : sg.dmg);
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
@@ -722,7 +755,9 @@ function attack() {
     da = Math.atan2(Math.sin(da), Math.cos(da));
     if (Math.abs(da) > arc / 2) continue;
     // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
-    e.hp -= dmg * (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1); e.flash = 0.12; hit++;
+    const mul = (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1);
+    e.hp -= dmg * mul; e.flash = 0.12; hit++;
+    if (!finish && sg.hits === 2) e.hp -= dmg * mul * sg.hit2; // 双剣：同じ敵に2発目（糖化は1回分のまま）
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const boss = e.hiochi || e.riceBoss;
     const kb = (boss ? 30 : e.elite ? 90 : 260) * (finish && !boss ? COMBO.kb4 : 1); // ボス級のノックバック耐性は現行のまま
@@ -731,17 +766,12 @@ function attack() {
     if (finish && !boss) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; } // 吹き飛び：他の雑魚を巻き込む
   }
   if (hit) {
-    sfx('hit');
-    if (finish) { // フィニッシュの手応え（新規音は作らない）
-      sfx('kill'); G.hitstop = 0.1;
-      // 踏み込みは「当たったときだけ」。瞬間移動せず0.1秒かけて速度で消化する（空振りでは前進しない）
-      p.dashT = COMBO.dashT;
-      p.dashVx = Math.cos(p.face) * COMBO.step4 / COMBO.dashT;
-      p.dashVy = Math.sin(p.face) * COMBO.step4 / COMBO.dashT;
-    }
+    sfx('hit', COMBO.pitch[step]); // 段が上がるほど音程が上がる（ド→ミ→ソ→高いド）
+    if (finish) { sfx('kill'); G.hitstop = 0.1; } // 一掃の手応え（新規音は作らない・その場で回るので前進なし）
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
     // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
-    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
+    // 単発化で1振りのヒット数が減るぶん、4段目の一掃だけ多めに回収する
+    G.glucose = Math.min(G.glucose + hit * (finish ? COMBO.glu4 : 1) * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
   }
 }
 
@@ -1165,7 +1195,7 @@ const FX = {
   flash: 'brightness(1.6)',   // ヒットの白フラッシュ（3.0は白飛びして別キャラに見えた）
   finEdge: 'rgba(255,250,235,0.8)', // フィニッシュの穂先ハイライト（長槍のスピードライン）
   crescentIn: 0.6,            // 三日月剣閃の内側半径（sr比）。小さいほど帯が太い＝敵を覆う
-  crescentInFin: 0.5,         // フィニッシュだけ帯を厚く（拡大した迫力を出す）
+  ringIn: 0.82,               // 4段目の全周一掃は「輪」。太いと円盤に見えて中の敵を塗り潰す
 };
 // 視認性のトーン（叩き台）：地面と米俵を沈め、敵グリフに接地影を敷いて浮かせる
 const TONE = {
@@ -1383,8 +1413,8 @@ function draw() {
     const fin = !!G.swing.finish;
     // 三日月剣閃（cool.html と同じ考え方）：中心から塗らず、外周付近だけを弧の帯にする。
     // パイ型ベタ塗りは面積が大きく、下にいる敵を白く塗り潰していたための形状変更。
-    const crescent = (s0, s1) => {
-      const inner = sr * (fin ? FX.crescentInFin : FX.crescentIn); // フィニッシュは帯を少し厚く
+    const crescent = (s0, s1, innerRatio) => {
+      const inner = sr * (innerRatio || FX.crescentIn);
       cx.beginPath();
       cx.arc(p.x, p.y, sr, s0, s1);
       cx.arc(p.x, p.y, inner, s1, s0, true);
@@ -1399,7 +1429,16 @@ function draw() {
       cx.strokeStyle = fin ? 'rgba(255,250,235,0.66)' : 'rgba(255,244,206,0.62)';
       cx.stroke();
     };
-    if (type === 'yari') {
+    if (fin) {
+      // 4段目：全周360°の一掃。プレイヤーを中心に一周する細い輪＋ぐるりと回る櫂棒（全武器共通）
+      crescent(0, Math.PI * 2, FX.ringIn);
+      const lead = face + sdir * Math.PI * 2 * pr;
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = type === 'soken' ? 6 : 8; cx.lineCap = 'round';
+      cx.beginPath();
+      cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
+      cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
+      cx.stroke();
+    } else if (type === 'yari') {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
       const nx = -sin, ny = cos; // 柄に直交する法線
