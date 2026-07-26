@@ -1162,9 +1162,19 @@ function bossArrow(e, glyph) {
 // 白抜け対策の共通パラメータ：敵が「色のない白いキャラ」に見えないよう、
 // ヒット時のフラッシュとフィニッシュ剣閃の白さを抑える（数値は叩き台）
 const FX = {
-  flash: 'brightness(1.6)',            // ヒットの白フラッシュ（3.0は白飛びして別キャラに見えた）
-  finTrail: 'rgba(255,250,235,0.42)',  // フィニッシュ剣閃（0.72の純白は下の敵を塗り潰していた）
-  finEdge: 'rgba(255,250,235,0.8)',    // フィニッシュの穂先ハイライト（長槍のスピードライン）
+  flash: 'brightness(1.6)',   // ヒットの白フラッシュ（3.0は白飛びして別キャラに見えた）
+  finEdge: 'rgba(255,250,235,0.8)', // フィニッシュの穂先ハイライト（長槍のスピードライン）
+  crescentIn: 0.6,            // 三日月剣閃の内側半径（sr比）。小さいほど帯が太い＝敵を覆う
+  crescentInFin: 0.5,         // フィニッシュだけ帯を厚く（拡大した迫力を出す）
+};
+// 視認性のトーン（叩き台）：地面と米俵を沈め、敵グリフに接地影を敷いて浮かせる
+const TONE = {
+  ground0: '#ab9670', ground1: '#8b7854', // 土の地面（中央→縁）。旧 #c9b183/#a68f63 は明るすぎた
+  grass: 'rgba(104,110,72,0.14)',         // 草むらの点。緑が強いと雑菌🦠と紛らわしい
+  bale0: '#b6a077', bale1: '#8f7c56',     // 米俵の山（明→暗）。旧 #e6cf8c/#c2a259 は主役級に見えた
+  baleLine: 'rgba(88,68,40,0.45)',        // 俵の縄目
+  kuraYard: 'rgba(66,54,42,0.30)',        // 蔵ゾーンの敷地：地面より暗い土間色（剣閃・敵と混ざらない）
+  shadow: 'rgba(38,26,16,0.30)',          // 敵の接地影
 };
 
 function draw() {
@@ -1188,11 +1198,11 @@ function draw() {
   cx.fillRect(FL - 14, FT - 14, FIELD.w + 28, FIELD.h + 28);
   // 土の地面（中央は明るく、縁は落ち着いた土色）
   const grad = cx.createRadialGradient(ARENA.x, ARENA.y - 60, 60, ARENA.x, ARENA.y, Math.max(HALF_W, HALF_H));
-  grad.addColorStop(0, '#c9b183'); grad.addColorStop(1, '#a68f63');
+  grad.addColorStop(0, TONE.ground0); grad.addColorStop(1, TONE.ground1);
   cx.fillStyle = grad;
   cx.fillRect(FL, FT, FIELD.w, FIELD.h);
-  // 草むらの点（緑がかった低アルファの点をまばらに）
-  cx.fillStyle = 'rgba(96,128,58,0.20)';
+  // 草むらの点（緑を落とした土寄りの点。緑が強いと雑菌と見分けがつかない）
+  cx.fillStyle = TONE.grass;
   for (let i = 0; i < 90; i++) {
     const gx = FL + ((i * 137.508) % FIELD.w), gy = FT + ((i * 219.317) % FIELD.h);
     cx.beginPath();
@@ -1221,7 +1231,7 @@ function draw() {
     const active = k === G.activeKura;
     // 蔵の敷地（土間）：ゾーン内の地面をうっすら別色にして「蔵の敷地」を示す
     cx.beginPath(); cx.arc(k.x, k.y, k.r, 0, 7);
-    cx.fillStyle = 'rgba(150,124,90,0.28)'; cx.fill();
+    cx.fillStyle = TONE.kuraYard; cx.fill();
     cx.save();
     cx.beginPath(); cx.arc(k.x, k.y, k.r, 0, 7);
     if (k.state === 'cleared') {
@@ -1263,12 +1273,12 @@ function draw() {
   for (const o of G.obstacles) {
     const ry = o.r * 0.82; // 俵の山は横長の楕円
     const og = cx.createRadialGradient(o.x - o.r * 0.3, o.y - ry * 0.4, o.r * 0.2, o.x, o.y, o.r);
-    og.addColorStop(0, '#e6cf8c'); og.addColorStop(1, '#c2a259'); // 黄土〜藁色
+    og.addColorStop(0, TONE.bale0); og.addColorStop(1, TONE.bale1); // 黄土〜藁色（彩度・明度を落として背景側へ）
     cx.beginPath(); cx.ellipse(o.x, o.y, o.r, ry, 0, 0, 7);
     cx.fillStyle = og; cx.fill();
-    cx.strokeStyle = 'rgba(120,92,48,0.5)'; cx.lineWidth = 3; cx.stroke();
+    cx.strokeStyle = TONE.baleLine; cx.lineWidth = 3; cx.stroke();
     // 俵の縄目（横線2〜3本）
-    cx.strokeStyle = 'rgba(120,92,48,0.55)'; cx.lineWidth = 2.5; cx.lineCap = 'round';
+    cx.strokeStyle = TONE.baleLine; cx.lineWidth = 2.5; cx.lineCap = 'round';
     const rows = 3;
     for (let i = 1; i <= rows; i++) {
       const fy = -ry + (2 * ry) * i / (rows + 1); // 楕円内のy位置
@@ -1310,7 +1320,12 @@ function draw() {
       cx.fillStyle = au; cx.fill();
     }
     const glyph = e.hiochi ? '👹' : e.riceBoss ? '🍙' : e.elite ? '😈' : '🦠';
-    cx.font = (e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22) + 'px serif';
+    const gsz = e.hiochi ? 58 : e.riceBoss ? (e.r > 30 ? 64 : 56) : e.elite ? 44 : 22;
+    cx.font = gsz + 'px serif';
+    // 接地影：土や米俵と同系色に沈まないよう、グリフの足元に暗い楕円を敷いて輪郭を立てる
+    cx.beginPath();
+    cx.ellipse(e.x, e.y + gsz * 0.34, gsz * 0.34, gsz * 0.13, 0, 0, 7);
+    cx.fillStyle = TONE.shadow; cx.fill();
     // 吹き飛び中はくるくる回す。ただし白フラッシュ（brightness）は掛けない：
     // 回転＋白抜けが重なると「色のついていない別キャラ」に見えるため（回転自体は色を落とさない）
     const flying = e.flying > 0;
@@ -1366,7 +1381,24 @@ function draw() {
     const face = G.swing.face;
     const sdir = G.swing.dir || 1; // 連の段によるスイング方向（2段目＝左薙ぎ）
     const fin = !!G.swing.finish;
-    const trail = fin ? FX.finTrail : 'rgba(255,240,190,0.45)'; // フィニッシュだけ白っぽい光跡（下の敵を塗り潰さない濃さ）
+    // 三日月剣閃（cool.html と同じ考え方）：中心から塗らず、外周付近だけを弧の帯にする。
+    // パイ型ベタ塗りは面積が大きく、下にいる敵を白く塗り潰していたための形状変更。
+    const crescent = (s0, s1) => {
+      const inner = sr * (fin ? FX.crescentInFin : FX.crescentIn); // フィニッシュは帯を少し厚く
+      cx.beginPath();
+      cx.arc(p.x, p.y, sr, s0, s1);
+      cx.arc(p.x, p.y, inner, s1, s0, true);
+      cx.closePath();
+      const g = cx.createRadialGradient(p.x, p.y, inner, p.x, p.y, sr);
+      g.addColorStop(0, 'rgba(255,240,190,0)');
+      g.addColorStop(0.7, fin ? 'rgba(255,250,235,0.30)' : 'rgba(255,240,190,0.28)');
+      g.addColorStop(1, fin ? 'rgba(255,250,235,0.56)' : 'rgba(255,240,190,0.52)'); // 帯に重なった敵が白飛びしない濃さ（実測で調整）
+      cx.fillStyle = g; cx.fill();
+      cx.beginPath(); cx.arc(p.x, p.y, sr, s0, s1); // 刃先のエッジライン
+      cx.lineWidth = fin ? 3.5 : 2.5;
+      cx.strokeStyle = fin ? 'rgba(255,250,235,0.66)' : 'rgba(255,244,206,0.62)';
+      cx.stroke();
+    };
     if (type === 'yari') {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
@@ -1408,12 +1440,7 @@ function draw() {
         if (!G.swing.impacted) { G.shake = Math.max(G.shake, 8); G.swing.impacted = true; } // 着弾の一撃は一度だけ
         const k = (pr - 0.4) / 0.6;
         const ang = face + sdir * Math.PI * (1 - k); // 振り下ろす向きは連の段で反転
-        // 光跡（振り下ろしの扇）
-        cx.beginPath();
-        cx.moveTo(p.x, p.y);
-        cx.arc(p.x, p.y, sr, Math.min(ang, face), Math.max(ang, face));
-        cx.closePath();
-        cx.fillStyle = trail; cx.fill();
+        crescent(Math.min(ang, face), Math.max(ang, face)); // 光跡（振り下ろしの三日月）
         // 柄
         cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8; cx.lineCap = 'round';
         cx.beginPath();
@@ -1424,7 +1451,7 @@ function draw() {
         const rx = p.x + cos0 * sr * 0.7, ry = p.y + sin0 * sr * 0.7;
         const rr = 20 + k * 40;
         cx.globalAlpha = 1 - k;
-        cx.strokeStyle = 'rgba(255,255,255,0.95)'; cx.lineWidth = 3;
+        cx.strokeStyle = 'rgba(255,246,214,0.85)'; cx.lineWidth = 3; // 純白だと着弾点の敵が白く飛ぶ
         cx.beginPath(); cx.arc(rx, ry, rr, 0, 7); cx.stroke();
         cx.globalAlpha = 1;
       }
@@ -1433,11 +1460,7 @@ function draw() {
       const lead = face - Math.PI + sdir * 2 * Math.PI * pr; // 回転の向きは連の段で反転
       const tail = Math.min(1.4, 2 * Math.PI * pr); // lead-tail〜lead の扇で追従
       const t0 = lead - sdir * tail;
-      cx.beginPath();
-      cx.moveTo(p.x, p.y);
-      cx.arc(p.x, p.y, sr, Math.min(t0, lead), Math.max(t0, lead));
-      cx.closePath();
-      cx.fillStyle = trail; cx.fill();
+      crescent(Math.min(t0, lead), Math.max(t0, lead));
       cx.strokeStyle = '#8a5a2b'; cx.lineWidth = fin ? 9 : 7; cx.lineCap = 'round';
       cx.beginPath();
       cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
@@ -1451,11 +1474,10 @@ function draw() {
         : [{ from: face - sdir * sa / 2, dir: sdir }];
       for (const b of blades) {
         const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
-        cx.beginPath();
-        cx.moveTo(p.x, p.y);
-        cx.arc(p.x, p.y, sr, Math.min(b.from, lead), Math.max(b.from, lead));
-        cx.closePath();
-        cx.fillStyle = trail; cx.fill();
+        const tail = Math.min(sa * pr * (twin ? 0.5 : 1), 1.1); // 刃先に追従する帯だけを残す
+        const s0 = b.dir === 1 ? lead - tail : lead;
+        const s1 = b.dir === 1 ? lead : lead + tail;
+        crescent(s0, s1);
         cx.strokeStyle = '#8a5a2b'; cx.lineWidth = (twin ? 5 : 7) + (fin ? 2 : 0); cx.lineCap = 'round';
         cx.beginPath();
         cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
