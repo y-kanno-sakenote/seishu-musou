@@ -455,7 +455,7 @@ const G = {
   eqCol: 0, eqIdx: 0, eqBack: 'world', // 装備画面のカーソルと戻り先
   eqMsg: null, // 装備画面の一時メッセージ {str, t}（2秒で消える）
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
-  player: null, enemies: [], particles: [], waves: [], texts: [],
+  player: null, enemies: [], particles: [], waves: [], texts: [], corpses: [], // corpses=連舞フィニッシュで吹き飛ぶ「死に体」（見た目＋巻き込みのみ）
   swing: null, spawnT: 0,
   comboStep: 0, lastAtkT: -99, // 連舞（4段コンボ）の現在段と最終攻撃時刻
   hiochi: null, alarm: 0,
@@ -491,7 +491,7 @@ function restartRegion() { // 腐造しても装備は残る。同じ地域・�
 function buildField() {
   G.kills = 0; G.combo = 0; G.comboT = 0;
   G.glucose = 0; G.shake = 0;
-  G.enemies = []; G.particles = []; G.waves = []; G.texts = [];
+  G.enemies = []; G.particles = []; G.waves = []; G.texts = []; G.corpses = [];
   G.swing = null; G.spawnT = 0; G.alarm = 0;
   G.comboStep = 0; G.lastAtkT = -99;
   G.freezeT = 0; G.beam = null;
@@ -690,6 +690,8 @@ const COMBO = {
   step4: 40,  // フィニッシュの踏み込み距離px（ヒット時のみ・0.1秒かけて滑らかに消化）
   dashT: 0.1, // 踏み込みにかける時間（秒）
   fly: 0.5,   // 吹き飛び状態の秒数
+  corpse: 0.2,      // 死に体（フィニッシュ撃破の見た目）が飛んでいる秒数
+  corpseDecay: 0.05, // 死に体のノックバック減衰（敵の0.005より緩め＝遠くまで飛ぶ）
 };
 
 function attack() {
@@ -803,6 +805,15 @@ function addText(x, y, str, col, size) {
 
 function kill(e, i) {
   G.enemies.splice(i, 1);
+  // 連舞フィニッシュで吹き飛ばされている最中に倒れた非ボスは「死に体」を残す。
+  // 撃破処理（発酵度・石高・ドロップ・音・パーティクル）は以降で通常どおり1回だけ走る＝二重カウントしない。
+  if (e.flying > 0 && !e.hiochi && !e.riceBoss) {
+    G.corpses.push({
+      x: e.x, y: e.y, kx: e.kx, ky: e.ky, r: e.r,
+      glyph: e.elite ? '😈' : '🦠', size: e.elite ? 44 : 22,
+      spin: e.spin || 0, t: COMBO.corpse, max: COMBO.corpse, flyHit: [],
+    });
+  }
   sfx('kill');
   G.kills++;
   G.combo++; G.comboT = 1.3;
@@ -967,7 +978,9 @@ function update(dt) {
   for (let i = G.enemies.length - 1; i >= 0; i--) {
     const e = G.enemies[i];
     if (e.hp <= 0) { kill(e, i); continue; }
-    e.flash -= dt;
+    e.flash = Math.max(e.flash - dt, 0); // 白フラッシュは必ず減る（凍結・スタンでも取り残さない）
+    // 吹き飛びの残り時間も必ず減らす（凍結・スタン中に傾いたまま固まるのを防ぐ）
+    if (e.flying > 0) { e.flying -= dt; if (e.flying <= 0) { e.flying = 0; e.flyHit = []; e.spin = 0; } }
     if (G.freezeT > 0) continue; // 6号の凍結：動かない・殴らない・再生もしない
     e.stunT = (e.stunT || 0) - dt;
     if (e.hiochi) { // 自己再生：放置すると押し返される
@@ -983,7 +996,6 @@ function update(dt) {
     pushOut(e, e.r * 0.7); // 蒸米の島を回り込ませる（多少の重なりは許容）
     // 吹き飛び中の巻き込み：ぶつかった雑魚に小ダメージ＋同方向へ弾く（連鎖はさせない）
     if (e.flying > 0) {
-      e.flying -= dt;
       const kl = Math.hypot(e.kx, e.ky) || 1;
       e.spin += dt * 13 * (e.kx >= 0 ? 1 : -1); // 進行方向に応じてくるくる回る
       for (const o of G.enemies) {
@@ -995,7 +1007,6 @@ function update(dt) {
         o.kx += e.kx / kl * 220; o.ky += e.ky / kl * 220; // 相手にflyingは付けない＝多段連鎖しない
         G.shake = Math.min(G.shake + 1.5, 9);
       }
-      if (e.flying <= 0) { e.flying = 0; e.flyHit = []; e.spin = 0; }
     }
     // プレイヤー接触（白麹：20%で弾く）
     if (d < e.r + 14 && p.inv <= 0) {
@@ -1017,6 +1028,27 @@ function update(dt) {
         if (G.kills > META.best) META.best = G.kills;
         saveMeta();
       }
+    }
+  }
+
+  // 死に体（フィニッシュ撃破の吹き飛び）：当たり判定は持たず、巻き込みだけ生きている
+  for (let i = G.corpses.length - 1; i >= 0; i--) {
+    const c = G.corpses[i];
+    c.t -= dt;
+    if (c.t <= 0) { G.corpses.splice(i, 1); continue; }
+    if (G.freezeT > 0) continue; // 凍結中は死に体も止まる（残り時間だけ進む）
+    c.x += c.kx * dt; c.y += c.ky * dt;
+    c.kx *= Math.pow(COMBO.corpseDecay, dt); c.ky *= Math.pow(COMBO.corpseDecay, dt);
+    c.spin += dt * 13 * (c.kx >= 0 ? 1 : -1);
+    const kl = Math.hypot(c.kx, c.ky) || 1;
+    for (const o of G.enemies) { // 生きている非ボスだけ巻き込む（1体につき同じ相手へは1回）
+      if (o.hiochi || o.riceBoss || o.hp <= 0) continue;
+      if (c.flyHit.indexOf(o) >= 0) continue;
+      if (Math.hypot(o.x - c.x, o.y - c.y) >= c.r + o.r) continue;
+      c.flyHit.push(o);
+      o.hp -= weaponDmg() * 0.5; o.flash = 0.12; // 巻き込みダメージは飛行敵と同じ
+      o.kx += c.kx / kl * 220; o.ky += c.ky / kl * 220;
+      G.shake = Math.min(G.shake + 1.5, 9);
     }
   }
 
@@ -1127,6 +1159,14 @@ function bossArrow(e, glyph) {
 }
 
 // ---- 描画 ----
+// 白抜け対策の共通パラメータ：敵が「色のない白いキャラ」に見えないよう、
+// ヒット時のフラッシュとフィニッシュ剣閃の白さを抑える（数値は叩き台）
+const FX = {
+  flash: 'brightness(1.6)',            // ヒットの白フラッシュ（3.0は白飛びして別キャラに見えた）
+  finTrail: 'rgba(255,250,235,0.42)',  // フィニッシュ剣閃（0.72の純白は下の敵を塗り潰していた）
+  finEdge: 'rgba(255,250,235,0.8)',    // フィニッシュの穂先ハイライト（長槍のスピードライン）
+};
+
 function draw() {
   if (G.mode === 'title') { drawTitle(); return; }
   if (G.mode === 'world') { drawWorld(); return; }
@@ -1135,6 +1175,7 @@ function draw() {
   if (G.mode === 'map') { drawMap(); return; }
   if (G.mode === 'regionclear') { drawRegionClear(); return; }
   cx.save();
+  cx.filter = 'none'; cx.globalAlpha = 1; // 前フレームからの持ち越しを断つ（白抜け・半透明の取り残し防止）
   cx.clearRect(0, 0, W, H);
   const shx = G.shake > 0 ? (Math.random() - 0.5) * G.shake : 0;
   const shy = G.shake > 0 ? (Math.random() - 0.5) * G.shake : 0;
@@ -1275,7 +1316,7 @@ function draw() {
     const flying = e.flying > 0;
     const flash = e.flash > 0 && !flying;
     cx.save(); // save/restoreは常に対で通す（状態漏れ防止）
-    if (flash) cx.filter = 'brightness(3)';
+    if (flash) cx.filter = FX.flash;
     if (flying) {
       cx.translate(e.x, e.y + wob);
       cx.rotate(e.spin || 0);
@@ -1290,6 +1331,17 @@ function draw() {
       cx.fillStyle = e.hiochi ? '#ff5a4a' : '#b98ad9';
       cx.fillRect(e.x - 32, e.y - 48, 64 * e.hp / e.maxHp, 6);
     }
+  }
+
+  // 死に体：回転しながら飛び、薄くなって消える（白フラッシュは掛けない）
+  for (const c of G.corpses) {
+    cx.save();
+    cx.globalAlpha = Math.max(c.t / c.max, 0);
+    cx.font = c.size + 'px serif';
+    cx.translate(c.x, c.y);
+    cx.rotate(c.spin);
+    cx.fillText(c.glyph, 0, 0);
+    cx.restore();
   }
 
   // プレイヤー（蔵人）。華やぎ中は金色のオーラ
@@ -1314,7 +1366,7 @@ function draw() {
     const face = G.swing.face;
     const sdir = G.swing.dir || 1; // 連の段によるスイング方向（2段目＝左薙ぎ）
     const fin = !!G.swing.finish;
-    const trail = fin ? 'rgba(255,255,255,0.72)' : 'rgba(255,240,190,0.45)'; // フィニッシュだけ白く強い光跡
+    const trail = fin ? FX.finTrail : 'rgba(255,240,190,0.45)'; // フィニッシュだけ白っぽい光跡（下の敵を塗り潰さない濃さ）
     if (type === 'yari') {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
@@ -1331,8 +1383,8 @@ function draw() {
         const ox = nx * off, oy = ny * off;
         const d0 = ext * 0.4, d1 = ext;
         const g = cx.createLinearGradient(p.x + cos * d0 + ox, p.y + sin * d0 + oy, p.x + cos * d1 + ox, p.y + sin * d1 + oy);
-        g.addColorStop(0, fin ? 'rgba(255,255,255,0)' : 'rgba(255,240,190,0)');
-        g.addColorStop(1, fin ? 'rgba(255,255,255,0.95)' : 'rgba(255,240,190,0.75)');
+        g.addColorStop(0, fin ? 'rgba(255,250,235,0)' : 'rgba(255,240,190,0)');
+        g.addColorStop(1, fin ? FX.finEdge : 'rgba(255,240,190,0.75)');
         cx.strokeStyle = g; cx.lineWidth = (off === 0 ? 2 : 1.4) + (fin ? 1.2 : 0);
         cx.beginPath();
         cx.moveTo(p.x + cos * d0 + ox, p.y + sin * d0 + oy);
