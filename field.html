@@ -310,7 +310,12 @@ addEventListener('keydown', e => {
     META.yeast = META.yeasts[(META.yeasts.indexOf(META.yeast) + 1) % META.yeasts.length];
     saveMeta();
   }
-  if (G.mode === 'over') { if (e.code === 'KeyR') restartRegion(); return; }
+  // 腐造：R＝同じ地域でもう一仕込み／Space・Enter＝ワールドマップへ（地域・難易度・装備を変えたいとき）
+  if (G.mode === 'over') {
+    if (e.code === 'KeyR') restartRegion();
+    else if (ok) backToWorld();
+    return;
+  }
   if (G.mode === 'result') {
     const r = G.result;
     const arrow = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyA','KeyD','KeyW','KeyS'].includes(e.code);
@@ -355,6 +360,9 @@ const MAP_EQUIP_BTN = { x: 20, y: H - 56, w: 104, h: 38 };
 const EQUIP_BACK_BTN = { x: 20, y: 20, w: 104, h: 38 };
 const EQUIP_SELL_BTN = { x: W - 20 - 104, y: 20, w: 104, h: 38 }; // 蔵出し（売却）
 const EQUIP_REWORK_BTN = { x: W - 20 - 104, y: 64, w: 104, h: 38 }; // 加工（リロール）
+// 腐造（over）画面の2つの出口：リトライとワールドマップ帰還
+const OVER_RETRY_BTN = { x: W / 2 - 200, y: H - 92, w: 180, h: 44 };
+const OVER_WORLD_BTN = { x: W / 2 + 20, y: H - 92, w: 180, h: 44 };
 function canvasPos(e) {
   const r = cv.getBoundingClientRect();
   const sx = r.width > 0 ? W / r.width : 1, sy = r.height > 0 ? H / r.height : 1; // レイアウト前のゼロ除算ガード
@@ -370,7 +378,11 @@ cv.addEventListener('pointerdown', e => {
   if (G.mode === 'title') { G.mode = 'world'; return; }
   if (G.mode === 'world') { worldTap(p); return; }
   if (G.mode === 'diffsel') { diffTap(p); return; }
-  if (G.mode === 'over') { restartRegion(); return; }
+  if (G.mode === 'over') { // タッチ：2つのボタンで出口を選ぶ（ボタン外は誤爆防止で無反応）
+    if (inBtn(p, OVER_RETRY_BTN)) restartRegion();
+    else if (inBtn(p, OVER_WORLD_BTN)) backToWorld();
+    return;
+  }
   if (G.mode === 'regionclear') { if (G.clearT > 0.8) backToWorld(); return; }
   if (G.mode === 'result') { resultTap(p); return; }
   if (G.mode === 'map') { mapTap(p); return; }
@@ -736,7 +748,7 @@ const COMBO = {
 // ＝どの武器でも「雑魚は通常2発（大槌だけ1発）／フィニッシュは1発」で倒せる帯に収める（実測で調整）
 const SINGLE = {
   daito:    { arc: 1,    range: 1,    dmg: 1,    hits: 1 },             // 標準（基準点）
-  soken:    { arc: 0.9,  range: 0.9,  dmg: 1,    hits: 2, hit2: 0.5 },  // 双剣：同じ敵に2発目（威力50%）。0.6だと精米35%で1振り確殺になった
+  soken:    { arc: 1.75, range: 0.9,  dmg: 1,    hits: 2, hit2: 0.45 }, // 双剣：近いが広い乱舞（実効78.8°／64px）。2発目は45%＝広角化の相殺（0.5→0.45。0.4未満だと雑魚が3発になる）
   yari:     { arc: 1.15, range: 1.25, dmg: 0.85, hits: 1 },             // 長槍：12.6°は狭すぎたので18°に緩め、そのぶん威力を抑える
   otsuchi:  { arc: 1.1,  range: 1,    dmg: 1.25, hits: 1 },             // 大槌：遅く重い（雑魚を通常1発＝個性として維持）
   naginata: { arc: 1.05, range: 1,    dmg: 1.15, hits: 1 },             // 薙刀：94.5°は広すぎたので66°に締め、1ダメ足りず3発だった分を底上げ
@@ -1826,8 +1838,20 @@ function draw() {
     cx.fillStyle = '#b8d98a';
     cx.fillText('獲得物と石高は持ち帰った。次の仕込みはもっと強い', W / 2, H / 2 - 54);
     drawRunLoot(H / 2 - 26);
-    cx.font = '15px serif'; cx.fillStyle = '#9a8c72';
-    cx.fillText('Rキーで' + regionName() + '地方をはじめから', W / 2, H - 40);
+    // 出口は2つ：同じ地域でリトライ／ワールドマップへ帰って地域・難易度・装備を変える
+    const overBtn = (b, label) => {
+      cx.fillStyle = 'rgba(40,28,18,0.92)';
+      cx.beginPath();
+      if (cx.roundRect) cx.roundRect(b.x, b.y, b.w, b.h, 10); else cx.rect(b.x, b.y, b.w, b.h);
+      cx.fill();
+      cx.strokeStyle = 'rgba(200,189,160,0.5)'; cx.lineWidth = 2; cx.stroke();
+      cx.font = 'bold 16px serif'; cx.fillStyle = '#f2e9d4';
+      cx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
+    };
+    overBtn(OVER_RETRY_BTN, 'もう一仕込み（R）');
+    overBtn(OVER_WORLD_BTN, 'ワールドマップへ');
+    cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
+    cx.fillText('R：' + regionName() + '地方をはじめから　／　Space：ワールドマップへ戻る（地域・難易度・装備を変える）', W / 2, H - 26);
   }
 }
 
