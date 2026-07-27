@@ -509,7 +509,7 @@ function buildField() {
   genObstacles(); // 蒸米の島を全域に配置（蔵ゾーン中心を避ける）
   G.player = { x: ARENA.x, y: ARENA.y + 850, face: -Math.PI / 2, hp: playerMaxHp(), inv: 0, atkCd: 0, dashT: 0, dashVx: 0, dashVy: 0 };
   G.camX = G.player.x; G.camY = G.player.y;
-  for (let i = 0; i < 30; i++) spawnEnemy(false, true); // 開幕から見える範囲に群れがいる
+  for (let i = 0; i < SQUAD.start; i++) spawnSquad(false, true); // 開幕から見える範囲に3組（15体）
   addText(G.player.x, G.player.y - 150, regionName() + '〔' + DIFFS[G.diff].name + '〕・シームレス仕込み', '#f2e9d4', 26);
 }
 
@@ -595,8 +595,33 @@ function spawnPosNearPlayer(minD, maxD) {
   return { x: Math.max(lx, Math.min(rx, p.x)), y: Math.max(ty, Math.min(by, p.y)) };
 }
 
-function spawnEnemy(elite, near) {
-  const pos = near ? spawnPosNearPlayer(250, 600) : spawnPosNearPlayer(600, 700);
+// 雑兵は「組」で現れる（無双の部隊単位）。数値はすべて叩き台
+const SQUAD = {
+  size: 5,          // 1組の人数（隊長入りの組は雑魚4＋隊長1）
+  spread: 60,       // 組の散らばり半径px
+  interval0: 3.0,   // 開幕の組の出現間隔（秒）
+  intervalMin: 1.5, // 最短の出現間隔（秒）
+  decay: 0.02,      // 蔵内時間1秒ごとに間隔が縮む量
+  max: 60,          // 同時存在の上限（旧120）
+  start: 3,         // 開幕に置く組数（＝15体）
+  mobHp: 20,        // 雑魚HP（旧10）：基本攻撃10なら2発、連舞フィニッシュ20なら1発
+  eliteHp: 80,      // 隊長（野生酵母）HP（旧60）
+};
+
+// 撃破1体あたりの発酵度（叩き台）。敵の総数が減ったぶん1体の価値を上げて蔵の進行を保つ。
+// 実測：mob2.5だと制圧が速くなりすぎたため1.5に落ち着かせた（発酵の波による撃破が進行の大半を担うため）
+const ALC = { mob: 1.5, elite: 5 };
+
+function spawnEnemy(elite, near, cx0, cy0) {
+  let pos;
+  if (cx0 !== undefined) { // 組の中心から散らす
+    const a = Math.random() * Math.PI * 2, d = Math.random() * SQUAD.spread;
+    const lx = ARENA.x - HALF_W + 12, rx = ARENA.x + HALF_W - 12;
+    const ty = ARENA.y - HALF_H + 12, by = ARENA.y + HALF_H - 12;
+    pos = { x: Math.max(lx, Math.min(rx, cx0 + Math.cos(a) * d)), y: Math.max(ty, Math.min(by, cy0 + Math.sin(a) * d)) };
+  } else {
+    pos = near ? spawnPosNearPlayer(250, 600) : spawnPosNearPlayer(600, 700);
+  }
   const spd = (1 + 0.04 * (kuraLevel() - 1)) * (gimFx().esp || 1); // 進軍が深いほど機敏に。風土補正あり
   const e = {
     x: pos.x,
@@ -604,12 +629,18 @@ function spawnEnemy(elite, near) {
     kx: 0, ky: 0, wob: Math.random() * 10,
     elite: !!elite,
     r: elite ? 22 : 11,
-    hp: elite ? 60 : 10,
+    hp: elite ? SQUAD.eliteHp : SQUAD.mobHp,
     sp: (elite ? 34 : 46 + Math.random() * 26) * spd,
     flash: 0,
     flying: 0, flyHit: [], spin: 0, // 連舞フィニッシュの吹き飛び状態
   };
   G.enemies.push(e);
+}
+
+// 1組5体を1か所にまとめて湧かせる。隊長入りなら雑魚4＋隊長1
+function spawnSquad(withLeader, near) {
+  const c = near ? spawnPosNearPlayer(250, 600) : spawnPosNearPlayer(600, 700);
+  for (let i = 0; i < SQUAD.size; i++) spawnEnemy(withLeader && i === 0, near, c.x, c.y);
 }
 
 // ---- 火落ち菌乱入（呂布枠）----
@@ -694,7 +725,7 @@ const COMBO = {
   range4: 1.25,        // 4段目の射程倍率
   dmg4: 2.0,           // 4段目の威力倍率
   kb4: 2.5,            // 4段目のノックバック倍率（ボス級は除外）
-  glu4: 1.0,           // 4段目ヒット時の糖化補正。実測では1蔵あたりの発酵回数が修正前と同じ3回だったので補正なし（増やしたい時だけ上げる）
+  glu4: 3.0,           // 4段目ヒット時の糖化補正。雑魚を5体1組・HP20にした結果ヒット数が減り発酵が2回まで落ちたので、一掃で一気に回収する形で補正（実測で3〜4回に回復）
   pitch: [1, 1.25, 1.5, 2], // 打撃音の音程（ド→ミ→ソ→高いド）
   fly: 0.5,            // 吹き飛び状態の秒数
   corpse: 0.2,         // 死に体（フィニッシュ撃破の見た目）が飛んでいる秒数
@@ -871,9 +902,9 @@ function kill(e, i) {
     addAlcohol(8);
   } else if (e.elite) {
     addText(e.x, e.y, '野生酵母 撃破！', '#ff9d6e', 18);
-    addAlcohol(5);
+    addAlcohol(ALC.elite);
   } else {
-    addAlcohol(1.2);
+    addAlcohol(ALC.mob);
   }
 }
 
@@ -979,17 +1010,17 @@ function update(dt) {
   if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
   p.inv -= dt;
 
-  // 敵スポーン（蔵内時間と蔵の番手で増える）
+  // 敵スポーン：X秒ごとに1組（蔵内時間と蔵の番手で間隔が縮む＝密度が上がる意図は従来どおり）
   G.spawnT -= dt;
   if (G.spawnT <= 0) {
     const kt = kuraT();
     const lv = kuraLevel();
     const activeMul = ak ? 1.5 : 1; // アクティブゾーン内は湧きレート×1.5
-    const rate = Math.max(0.55 - kt * 0.012, 0.10) / (1 + 0.15 * (lv - 1)) / (ak ? nodeMod('spawn') : 1) / (gimFx().spawn || 1) / activeMul;
-    G.spawnT = rate;
-    const n = 1 + Math.floor(kt / 25) + Math.floor((lv - 1) / 2);
-    const eliteP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * (ak ? nodeMod('elite') : 1) * (gimFx().elite || 1);
-    if (G.enemies.length < 120) for (let i = 0; i < n; i++) spawnEnemy(Math.random() < eliteP); // 逃げ回り時の無限増殖を防ぐ上限
+    const base = SQUAD.interval0 / (1 + 0.15 * (lv - 1)) / (ak ? nodeMod('spawn') : 1) / (gimFx().spawn || 1) / activeMul;
+    G.spawnT = Math.max(base - kt * SQUAD.decay, SQUAD.intervalMin);
+    // 隊長（野生酵母）入りの組の抽選率。従来のelite率と同じ意味
+    const leaderP = (0.04 + kt * 0.0007 + 0.02 * (lv - 1)) * (ak ? nodeMod('elite') : 1) * (gimFx().elite || 1);
+    if (G.enemies.length + SQUAD.size <= SQUAD.max) spawnSquad(Math.random() < leaderP); // 逃げ回り時の無限増殖を防ぐ上限
   }
   // 火落ち菌乱入判定＋出現中のペナルティ（各蔵ごと。ゾーン外でもドレインは殺菌まで続く）
   for (const k of G.kuras) {
