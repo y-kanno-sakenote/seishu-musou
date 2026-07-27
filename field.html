@@ -732,13 +732,14 @@ const COMBO = {
   corpseDecay: 0.05,   // 死に体のノックバック減衰（敵の0.005より緩め＝遠くまで飛ぶ）
 };
 
-// 単発3段での武器の個性（WTYPESの係数にさらに乗る。4段目の一掃には掛からない）
+// 武器の個性（WTYPESの係数にさらに乗る）。角度・射程は単発3段のみ、威力と多段は4段目にも掛かる
+// ＝どの武器でも「雑魚は通常2発（大槌だけ1発）／フィニッシュは1発」で倒せる帯に収める（実測で調整）
 const SINGLE = {
-  daito:    { arc: 1,   range: 1,    dmg: 1,    hits: 1 },              // 標準
-  soken:    { arc: 0.9, range: 0.9,  dmg: 1,    hits: 2, hit2: 0.6 },   // 双剣：同じ敵に2発目（威力60%）
-  yari:     { arc: 0.8, range: 1.25, dmg: 1,    hits: 1 },              // 長槍：細く長い突き
-  otsuchi:  { arc: 1.1, range: 1,    dmg: 1.25, hits: 1 },              // 大槌：遅く重い
-  naginata: { arc: 1.5, range: 1,    dmg: 1,    hits: 1 },              // 薙刀：単発でも角度広め
+  daito:    { arc: 1,    range: 1,    dmg: 1,    hits: 1 },             // 標準（基準点）
+  soken:    { arc: 0.9,  range: 0.9,  dmg: 1,    hits: 2, hit2: 0.5 },  // 双剣：同じ敵に2発目（威力50%）。0.6だと精米35%で1振り確殺になった
+  yari:     { arc: 1.15, range: 1.25, dmg: 0.85, hits: 1 },             // 長槍：12.6°は狭すぎたので18°に緩め、そのぶん威力を抑える
+  otsuchi:  { arc: 1.1,  range: 1,    dmg: 1.25, hits: 1 },             // 大槌：遅く重い（雑魚を通常1発＝個性として維持）
+  naginata: { arc: 1.05, range: 1,    dmg: 1.15, hits: 1 },             // 薙刀：94.5°は広すぎたので66°に締め、1ダメ足りず3発だった分を底上げ
 };
 
 function attack() {
@@ -777,7 +778,7 @@ function attack() {
   const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
   const crit = Math.random() < critRate;
   const stepMul = step === 2 ? COMBO.dmg3 : finish ? COMBO.dmg4 : 1;
-  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul * (finish ? 1 : sg.dmg);
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul * sg.dmg; // 威力の武器補正は4段目にも掛ける（掛けないと双剣・薙刀の一掃が雑魚を確殺できなかった）
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
@@ -788,7 +789,7 @@ function attack() {
     // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
     const mul = (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1);
     e.hp -= dmg * mul; e.flash = 0.12; hit++;
-    if (!finish && sg.hits === 2) e.hp -= dmg * mul * sg.hit2; // 双剣：同じ敵に2発目（糖化は1回分のまま）
+    if (sg.hits === 2) { e.hp -= dmg * mul * sg.hit2; e.twin = 0.12; } // 双剣：同じ敵に2発目（糖化は1回分のまま）。twin=2発目の追撃エフェクト
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const boss = e.hiochi || e.riceBoss;
     const kb = (boss ? 30 : e.elite ? 90 : 260) * (finish && !boss ? COMBO.kb4 : 1); // ボス級のノックバック耐性は現行のまま
@@ -1040,6 +1041,7 @@ function update(dt) {
     const e = G.enemies[i];
     if (e.hp <= 0) { kill(e, i); continue; }
     e.flash = Math.max(e.flash - dt, 0); // 白フラッシュは必ず減る（凍結・スタンでも取り残さない）
+    if (e.twin > 0) e.twin = Math.max(e.twin - dt, 0); // 双剣2発目の追撃エフェクト
     // 吹き飛びの残り時間も必ず減らす（凍結・スタン中に傾いたまま固まるのを防ぐ）
     if (e.flying > 0) { e.flying -= dt; if (e.flying <= 0) { e.flying = 0; e.flyHit = []; e.spin = 0; } }
     if (G.freezeT > 0) continue; // 6号の凍結：動かない・殴らない・再生もしない
@@ -1401,6 +1403,17 @@ function draw() {
       cx.fillText(glyph, e.x, e.y + wob);
     }
     cx.restore();
+    if (e.twin > 0) { // 双剣の2発目：小さな×の追撃斬線（1振りで2回入っているのを見せる）
+      const k = e.twin / 0.12, s = gsz * 0.42;
+      cx.save();
+      cx.globalAlpha = k;
+      cx.strokeStyle = 'rgba(255,250,235,0.95)'; cx.lineWidth = 2.5; cx.lineCap = 'round';
+      cx.beginPath();
+      cx.moveTo(e.x - s, e.y - s); cx.lineTo(e.x + s, e.y + s);
+      cx.moveTo(e.x + s, e.y - s); cx.lineTo(e.x - s, e.y + s);
+      cx.stroke();
+      cx.restore();
+    }
     if (e.hiochi || e.riceBoss) { // ボスHPバー
       cx.fillStyle = 'rgba(20,10,8,0.6)';
       cx.fillRect(e.x - 32, e.y - 48, 64, 6);
@@ -1473,7 +1486,10 @@ function draw() {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
       const nx = -sin, ny = cos; // 柄に直交する法線
-      const ext = pr < 0.5 ? 14 + (sr - 14) * (pr / 0.5) : sr - (sr - 14) * ((pr - 0.5) / 0.5);
+      // 伸びは鋭く（0〜0.35で一気に）、戻りはゆっくり（0.35〜1.0）＝「刺して引き抜く」感触
+      const ext = pr < 0.35
+        ? 14 + (sr - 14) * Math.sqrt(pr / 0.35)
+        : sr - (sr - 14) * ((pr - 0.35) / 0.65) * ((pr - 0.35) / 0.65);
       // 櫂棒本体
       cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
       cx.beginPath();
@@ -1505,6 +1521,17 @@ function draw() {
         cx.moveTo(p.x, p.y);
         cx.lineTo(p.x + Math.cos(bang) * bl, p.y + Math.sin(bang) * bl);
         cx.stroke();
+        // 予兆：着弾点に細い輪が縮んでいく（「溜め」を見せて遅さを重さに変える）
+        const t = pr / 0.4;
+        cx.save();
+        cx.globalAlpha = 0.25 + 0.35 * t;
+        cx.strokeStyle = 'rgba(255,246,214,0.9)'; cx.lineWidth = 2;
+        cx.setLineDash([6, 6]); cx.lineDashOffset = -G.t * 40;
+        cx.beginPath();
+        cx.arc(p.x + cos0 * sr * 0.7, p.y + sin0 * sr * 0.7, 58 - 20 * t, 0, 7);
+        cx.stroke();
+        cx.setLineDash([]);
+        cx.restore();
       } else {
         // 叩きつけ：柄が逆方向からfaceへ振り下ろされる
         if (!G.swing.impacted) { G.shake = Math.max(G.shake, 8); G.swing.impacted = true; } // 着弾の一撃は一度だけ
@@ -1526,9 +1553,11 @@ function draw() {
         cx.globalAlpha = 1;
       }
     } else if (type === 'naginata') {
-      // 薙刀：光跡と柄が全周1回転する
-      const lead = face - Math.PI + sdir * 2 * Math.PI * pr; // 回転の向きは連の段で反転
-      const tail = Math.min(1.4, 2 * Math.PI * pr); // lead-tail〜lead の扇で追従
+      // 薙刀：単発でも大きく振り回す。振り抜く量は実効角度の1.6倍に連動させる
+      // （以前は角度に関係なく全周1回転で、当たる範囲より広く見えて誤解を生んでいた）
+      const sweep = sa * 1.6;
+      const lead = face - sdir * sweep / 2 + sdir * sweep * pr; // 回転の向きは連の段で反転
+      const tail = Math.min(sa * 0.8, sweep * pr); // lead-tail〜lead の弧で追従
       const t0 = lead - sdir * tail;
       crescent(Math.min(t0, lead), Math.max(t0, lead));
       cx.strokeStyle = '#8a5a2b'; cx.lineWidth = fin ? 9 : 7; cx.lineCap = 'round';
