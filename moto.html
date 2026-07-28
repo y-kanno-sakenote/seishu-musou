@@ -132,7 +132,8 @@ const RICE_MAINS = {
 };
 const RICE_NAMES = Object.keys(RICE_MAINS);
 function riceMainIs(name) { return !!(META.rice && META.rice.name === name); }
-function playerMaxHp() { return 5 + (riceMainIs('雄町の魂') ? 1 : 0); }
+// 純度の上限。酛「酛の粘り」はラン内だけ上限を押し上げる（METAには一切書かない）
+function playerMaxHp() { return 5 + (riceMainIs('雄町の魂') ? 1 : 0) + (G && G.moto ? (G.moto.stack.nebari || 0) * MOTO.maxHp : 0); }
 
 const RARITY = [
   { label: '並',    color: '#c8bda0', slots: [0, 0] },
@@ -248,7 +249,7 @@ function gimFx() { // 風土の効果（名水仕込みは風土ごと無効化�
   if (riceHas('meisui')) return {};
   return REGIONS10[G.regionIdx].gim.fx;
 }
-function yeastCost() { return Math.round(YEASTS[META.yeast].cost * (gimFx().cost || 1)); }
+function yeastCost() { return Math.max(1, Math.round(YEASTS[META.yeast].cost * (gimFx().cost || 1) * motoCostMul())); }
 function gokuiHas(k) { return Array.isArray(META.gokui) && META.gokui.includes(k); }
 function regionName() { return REGIONS10[G.regionIdx].name; }
 // 難易度：敵スケールとドロップテーブル（EASY〜NIGHTMARE）が直結
@@ -292,6 +293,16 @@ addEventListener('keydown', e => {
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if (e.code === 'KeyM') { META.mute = !META.mute; saveMeta(); }
   const ok = e.code === 'Space' || e.code === 'Enter';
+  // 酛の3択（時が止まっている間）：他の操作より先に食う
+  if (G.mode === 'battle' && G.moto && G.moto.pick) {
+    const P = G.moto.pick;
+    if (['ArrowLeft','KeyA'].includes(e.code)) P.sel = (P.sel + P.opts.length - 1) % P.opts.length;
+    if (['ArrowRight','KeyD'].includes(e.code)) P.sel = (P.sel + 1) % P.opts.length;
+    const num = ['Digit1','Digit2','Digit3'].indexOf(e.code);
+    if (num >= 0 && num < P.opts.length && P.t > 0.25) { motoTake(num); return; }
+    if (ok && P.t > 0.25) motoTake(P.sel); // 押しっぱなしで次の3択まで飛ばさないよう0.25秒の間を置く
+    return;
+  }
   if (G.mode === 'title') { if (ok) G.mode = 'world'; return; }
   if (G.mode === 'world') {
     if (['ArrowLeft','KeyA'].includes(e.code)) G.worldSel = (G.worldSel + 9) % 10;
@@ -390,6 +401,7 @@ cv.addEventListener('pointerdown', e => {
   if (G.mode === 'map') { mapTap(p); return; }
   if (G.mode === 'equip') { equipTap(p); return; }
   if (G.mode === 'battle') {
+    if (G.moto && G.moto.pick) { motoTap(p); return; } // 3択中は戦闘操作を受け付けない
     if (inBtn(p, FERMENT_BTN)) { if (G.glucose >= yeastCost()) ferment(); return; }
     if (p.x < W * 0.55) { stickId = e.pointerId; stickBase = p; stickCur = p; }
   }
@@ -484,6 +496,7 @@ const G = {
   camX: W / 2, camY: H / 2, // プレイヤー追従カメラ
   obstacles: [], // 蒸米の島（円形の障害物）
   kuras: [], activeKura: null, runLoot: [], fieldStart: 0, // シームレス試作：4蔵・アクティブ蔵・獲得記録・フィールド開始時刻
+  moto: null, sparks: [], // 酛（ラン内成長。セーブしない）と飛び火の火花
 };
 window.G = G; // デバッグ用
 
@@ -513,6 +526,7 @@ function buildField() {
   G.freezeT = 0; G.beam = null;
   G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0;
   G.regionGauge = 0; G.runLoot = []; G.fieldStart = G.t;
+  G.moto = newMoto(); G.sparks = []; // 酛はランごとに真っさらから（前のランの強化は持ち越さない）
   G.activeKura = null; G.node = null; G.rank = 0; G.selIdx = 0;
   // 4蔵を生成。初期は先鋒のみ ready、他は locked
   G.kuras = KURA_LAYOUT.map(L => ({
@@ -803,14 +817,131 @@ const FINISH = {
   },
 };
 
-function critRate() { return (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0); }
+// ============================================================
+// 酛（もと）＝ラン内成長。敵撃破でXPが溜まり、レベルアップで時が止まり3択の強化カードが出る。
+// 効果はそのランのみ。装備・サブ技・METAとは完全に別枠で、セーブには一切書き込まない。
+// 数値はすべて叩き台（実測で調整）
+// ============================================================
+const MOTO = {
+  xp: { mob: 1, elite: 5, boss: 20 },   // 撃破1体あたりのXP（雑魚／隊長／ボス級）
+  base: 44, growth: 1.32,               // 必要XP＝base×growth^(Lv-1)（実測：1地域制覇でLv8〜10・44,58,77,101,134,176,233,307,406…）
+  atk: 0.10,    // 櫂の冴え：櫂入れ威力
+  glu: 0.15,    // 糖化促進
+  spd: 0.08,    // 軽き足取り
+  cost: 0.08,   // 省エネ発酵（乗算で減るので0にはならない）
+  range: 0.08,  // 間合い
+  crit: 0.05,   // 冴え渡る一撃
+  heal: 2, maxHp: 1,            // 酛の粘り：純度を2回復し上限+1
+  encore: 0.6,                  // 五段仕込み：5段目の威力倍率
+  oonami: 1.4,                  // 大波：フィニッシュの範囲・射程倍率
+  burstR: 92, burstDmg: 0.8,    // 湧き立ち：撃破時の小爆発（半径・武器威力比）
+  splashR: 140, splashDmg: 0.4, // 飛び火：櫂入れの飛び火（届く距離・威力比）
+};
+// 数値枠：重複取得可・スタックする
+const MOTO_NUM = [
+  { k: 'atk',    ico: '🪵', n: '櫂の冴え',     d: '櫂入れの威力 +10%' },
+  { k: 'glu',    ico: '🍚', n: '糖化促進',     d: '糖化の溜まり +15%' },
+  { k: 'spd',    ico: '👣', n: '軽き足取り',   d: '移動速度 +8%' },
+  { k: 'cost',   ico: '🫧', n: '省エネ発酵',   d: '必殺の発酵コスト -8%' },
+  { k: 'nebari', ico: '🍶', n: '酛の粘り',     d: '純度を2回復し上限 +1' },
+  { k: 'range',  ico: '📏', n: '間合い',       d: '攻撃の射程 +8%' },
+  { k: 'crit',   ico: '✨', n: '冴え渡る一撃', d: '会心率 +5%' },
+];
+// 体感枠：1ランに1回まで（取ったら抽選から外れる）
+const MOTO_UNI = [
+  { k: 'godan',     uni: true, ico: '🔥', n: '五段仕込み', d: '連舞が5段に。5段目は武器の技をもう一度（威力0.6倍）' },
+  { k: 'oonami',    uni: true, ico: '🌊', n: '大波',       d: 'フィニッシュ技の範囲・射程が1.4倍に広がる' },
+  { k: 'wakidachi', uni: true, ico: '💥', n: '湧き立ち',   d: '敵を撃破するたび、その場で小さく爆発する' },
+  { k: 'tobihi',    uni: true, ico: '⚡', n: '飛び火',     d: '櫂入れが当たった敵の近くの1体にも飛ぶ（0.4倍）' },
+];
+function motoNeed(lv) { return Math.round(MOTO.base * Math.pow(MOTO.growth, lv - 1)); }
+function newMoto() { return { lv: 1, xp: 0, need: motoNeed(1), total: 0, stack: {}, uni: {}, picks: [], pend: 0, pick: null }; }
+function motoN(k) { return (G.moto && G.moto.stack[k]) || 0; }
+function motoHas(k) { return !!(G.moto && G.moto.uni[k]); }
+function motoAtkMul() { return 1 + MOTO.atk * motoN('atk'); }
+function motoGluMul() { return 1 + MOTO.glu * motoN('glu'); }
+function motoSpdMul() { return 1 + MOTO.spd * motoN('spd'); }
+function motoCostMul() { return Math.pow(1 - MOTO.cost, motoN('cost')); }
+function motoRangeMul() { return 1 + MOTO.range * motoN('range'); }
+function motoCritAdd() { return MOTO.crit * motoN('crit'); }
+function motoFinMul() { return motoHas('oonami') ? MOTO.oonami : 1; } // 大波はフィニッシュ技だけに乗る
+function motoComboLen() { return motoHas('godan') ? 5 : 4; }
+
+function motoXp(n) {
+  const M = G.moto;
+  if (!M || G.mode !== 'battle') return;
+  M.xp += n; M.total += n;
+  while (M.xp >= M.need) { M.xp -= M.need; M.lv++; M.need = motoNeed(M.lv); M.pend++; }
+  if (M.pend > 0 && !M.pick) motoOpen();
+}
+// 3択を組む：必ず1つ以上は体感枠から（取り切ったら数値枠だけ）。同じ3択内では重複しない
+function motoOpen() {
+  const M = G.moto;
+  M.pend--;
+  const uni = MOTO_UNI.filter(c => !M.uni[c.k]);
+  const num = MOTO_NUM.slice();
+  const opts = [];
+  if (uni.length) opts.push(uni[Math.floor(Math.random() * uni.length)]);
+  while (opts.length < 3 && num.length) opts.push(num.splice(Math.floor(Math.random() * num.length), 1)[0]);
+  for (let i = opts.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = opts[i]; opts[i] = opts[j]; opts[j] = t; }
+  M.pick = { opts, sel: 0, t: 0 };
+  sfx('joso');
+}
+function motoTake(i) {
+  const M = G.moto;
+  if (!M || !M.pick) return;
+  const c = M.pick.opts[Math.max(0, Math.min(i, M.pick.opts.length - 1))];
+  if (!c) return;
+  if (c.uni) M.uni[c.k] = true; else M.stack[c.k] = (M.stack[c.k] || 0) + 1;
+  M.picks.push(c.n);
+  if (c.k === 'nebari' && G.player) G.player.hp = Math.min(G.player.hp + MOTO.heal, playerMaxHp()); // 上限を上げてから回復
+  M.pick = null;
+  sfx('ferment');
+  if (G.player) addText(G.player.x, G.player.y - 76, '酛 Lv' + M.lv + '　' + c.ico + c.n, '#ffd76e', 24);
+  if (M.pend > 0) motoOpen(); // 連続レベルアップは順番に出す
+}
+function motoReset() { if (G.moto) { G.moto.pick = null; G.moto.pend = 0; } } // ラン終了時に選択待ちを畳む
+// 湧き立ち：撃破地点の小爆発。爆発で倒れた敵は爆発しない（連鎖防止）
+function motoBurst(x, y) {
+  G.waves.push({ x, y, r: 8, max: MOTO.burstR, sp: 380, deco: true, moto: true });
+  const dmg = weaponDmg() * MOTO.burstDmg * motoAtkMul();
+  for (const o of G.enemies) {
+    if (o.hp <= 0 || o.hiochi || o.riceBoss) continue; // ボス級は巻き込まれない（既存の耐性に合わせる）
+    if (Math.hypot(o.x - x, o.y - y) > MOTO.burstR + o.r) continue;
+    o.hp -= dmg; o.flash = 0.12;
+    if (o.hp <= 0) o.burstKilled = true;
+  }
+  for (let k = 0; k < 8; k++) {
+    const a = Math.random() * Math.PI * 2, v = 60 + Math.random() * 150;
+    G.particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, t: 0.3, elite: true });
+  }
+  sfx('hit', 0.7);
+}
+// 飛び火：櫂入れが当たった敵ごとに、近くの「まだ当たっていない1体」へ弱い追撃を飛ばす
+function motoSplash(hitList, dmg) {
+  const done = new Set(hitList);
+  for (const e of hitList) {
+    let best = null, bd = MOTO.splashR;
+    for (const o of G.enemies) {
+      if (o.hp <= 0 || o.hiochi || o.riceBoss || done.has(o)) continue;
+      const d = Math.hypot(o.x - e.x, o.y - e.y);
+      if (d < bd) { bd = d; best = o; }
+    }
+    if (!best) continue;
+    done.add(best);
+    best.hp -= dmg * MOTO.splashDmg; best.flash = 0.12;
+    if (G.sparks.length < 40) G.sparks.push({ x1: e.x, y1: e.y, x2: best.x, y2: best.y, t: 0.16 });
+  }
+}
+
+function critRate() { return (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0) + motoCritAdd(); }
 // 単発1振りが1体に与える威力。技（FINISH.dmg）の基準はここ＝武器を替えても「単発何発ぶんか」で読める
 function singleDmg(wt, sg, crit) {
-  return weaponDmg() * wt.dmg * sg.dmg * (sg.hits === 2 ? 1 + sg.hit2 : 1) * (crit ? 2 : 1);
+  return weaponDmg() * wt.dmg * sg.dmg * (sg.hits === 2 ? 1 + sg.hit2 : 1) * (crit ? 2 : 1) * motoAtkMul();
 }
 // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
 function addGlucose(n) {
-  G.glucose = Math.min(G.glucose + n * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
+  G.glucose = Math.min(G.glucose + n * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1) * motoGluMul(), G.glucoseMax);
 }
 
 function attack() {
@@ -819,7 +950,8 @@ function attack() {
   const cd = SWEEP.cd * wt.cd * (styleIs('lid') ? 0.8 : 1) * (G.buffT > 0 ? 0.6 : 1); // 麹蓋-20%／華やぎ-40%
   p.atkCd = cd;
   // 連の段送り：前回攻撃からの経過が実効cd×2.2以内なら次の段へ、超えていれば1段目へ戻す
-  if (G.lastAtkT >= 0 && G.t - G.lastAtkT <= cd * COMBO.win) G.comboStep = (G.comboStep + 1) % 4;
+  // 酛「五段仕込み」を取ると連は5段になる（5段目＝フィニッシュ技のアンコール）
+  if (G.lastAtkT >= 0 && G.t - G.lastAtkT <= cd * COMBO.win) G.comboStep = (G.comboStep + 1) % motoComboLen();
   else G.comboStep = 0;
   G.lastAtkT = G.t;
   const step = G.comboStep;
@@ -827,14 +959,15 @@ function attack() {
   const type = (META.weapon && META.weapon.type) || 'daito';
   const sg = SINGLE[type] || SINGLE.daito;
   const box = styleIs('box') ? 1.5 : 1; // 箱麹：範囲1.5倍（＝糖化効率）
-  if (step === 3) { startFinish(type, wt, sg, box); return; } // 4段目＝武器ごとの技（形も威力も別物）
+  if (step >= 3) { startFinish(type, wt, sg, box, step === 4); return; } // 4段目＝武器ごとの技（5段目はそのアンコール）
   // 1〜3段は前方だけの単発
+  const mrange = motoRangeMul(); // 酛「間合い」
   let range, arc;
   if (step === 2) {
-    range = SWEEP.range * wt.range * box * COMBO.range3 * sg.range;
+    range = SWEEP.range * wt.range * box * COMBO.range3 * sg.range * mrange;
     arc = COMBO.arc3 * wt.arc * sg.arc;
   } else {
-    range = SWEEP.range * wt.range * box * COMBO.range1 * sg.range;
+    range = SWEEP.range * wt.range * box * COMBO.range1 * sg.range * mrange;
     arc = COMBO.arc1 * wt.arc * sg.arc;
   }
   G.swing = { t: 0, face: p.face, range, arc, type, step, dir };
@@ -849,8 +982,9 @@ function attack() {
     p.dashVy = Math.sin(p.face) * COMBO.step3 / COMBO.dashT3;
   }
   let hit = 0;
+  const hitList = []; // 酛「飛び火」用：この1振りで当てた敵
   const crit = Math.random() < critRate();
-  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * (step === 2 ? COMBO.dmg3 : 1) * sg.dmg;
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * (step === 2 ? COMBO.dmg3 : 1) * sg.dmg * motoAtkMul();
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
@@ -860,7 +994,7 @@ function attack() {
     if (Math.abs(da) > arc / 2) continue;
     // 凍結中は+50%（凍らせて叩き割る＝6号がロードアウト固定でも火力を持てる）
     const mul = (e.hiochi && riceHas('hiire') ? 1.5 : 1) * ((e.hiochi || e.riceBoss) && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1);
-    e.hp -= dmg * mul; e.flash = 0.12; hit++;
+    e.hp -= dmg * mul; e.flash = 0.12; hit++; hitList.push(e);
     if (sg.hits === 2) { e.hp -= dmg * mul * sg.hit2; e.twin = 0.12; } // 双剣：同じ敵に2発目（糖化は1回分のまま）。twin=2発目の追撃エフェクト
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const boss = e.hiochi || e.riceBoss;
@@ -872,35 +1006,38 @@ function attack() {
     sfx('hit', COMBO.pitch[step]); // 段が上がるほど音程が上がる（ド→ミ→ソ）
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
     addGlucose(hit);
+    if (motoHas('tobihi')) motoSplash(hitList, dmg); // 飛び火：糖化は増えない（火力だけの拡張）
   }
 }
 
 // ---- 連舞フィニッシュ（武器ごとの技）----
 // 技は G.art として持続する。arc/line は即時1発、dash/spin は interval ごとに artTick() を回す。
 // 描画も G.art が担う（4段目は G.swing を作らない）
-function startFinish(type, wt, sg, box) {
+function startFinish(type, wt, sg, box, encore) {
   const p = G.player;
   const F = FINISH[type] || FINISH.daito;
   const crit = Math.random() < critRate();
+  const mr = motoRangeMul() * motoFinMul(); // 酛：間合い（全体）×大波（フィニッシュのみ）
   G.swing = null;
   G.art = {
-    type, F, face: p.face, crit,
-    t: 0, dur: F.dur, tick: 0,
+    type, F, face: p.face, crit, encore: !!encore,
+    t: 0, dur: F.dur * (encore ? 0.7 : 1), tick: 0, // 5段目は演出を簡略化（溜めなし・尺短め）
     hits: new Map(), // この技で敵ごとに当てた回数（1体あたりの上限と糖化の判定に使う）
     marks: [], trail: [], cracks: null,
     x0: p.x, y0: p.y, // 即時ヒット系は発動位置で描く（判定を取った位置と画を一致させる）
-    range: SWEEP.range * wt.range * box * (F.range || 1),
-    radius: (F.radius || 0) * box,
-    len: (F.len || 0) * box, wide: (F.wide || 0) * box, // 箱麹は直線技にも効く（範囲1.5倍の一貫）
-    dmg: singleDmg(wt, sg, crit) * F.dmg,
+    range: SWEEP.range * wt.range * box * (F.range || 1) * mr,
+    radius: (F.radius || 0) * box * mr,
+    len: (F.len || 0) * box * mr, wide: (F.wide || 0) * box * mr, // 箱麹は直線技にも効く（範囲1.5倍の一貫）
+    dmg: singleDmg(wt, sg, crit) * F.dmg * (encore ? MOTO.encore : 1),
   };
+  if (encore) addText(p.x, p.y - 52, '五段！', '#ffd76e', 20);
   if (F.kind === 'dash') { // 疾風乱舞：無敵なし。壁・障害物クランプは通常の移動処理に任せる
-    p.dashT = F.dur;
-    p.dashVx = Math.cos(p.face) * F.dist / F.dur;
-    p.dashVy = Math.sin(p.face) * F.dist / F.dur;
+    p.dashT = G.art.dur;
+    p.dashVx = Math.cos(p.face) * F.dist / G.art.dur;
+    p.dashVy = Math.sin(p.face) * F.dist / G.art.dur;
   }
-  if (F.kind === 'spin') p.atkCd = Math.max(p.atkCd, F.dur); // 車輪大回転：回転が終わるまで次の連は始まらない
-  if (F.charge) { // 溜めのある技（豪快斬り）：判定は溜め明けに1回だけ打つ（update側）
+  if (F.kind === 'spin') p.atkCd = Math.max(p.atkCd, G.art.dur); // 車輪大回転：回転が終わるまで次の連は始まらない
+  if (F.charge && !encore) { // 溜めのある技（豪快斬り）：判定は溜め明けに1回だけ打つ（update側）
     G.art.charge = F.charge;
     sfx('tame');
     return;
@@ -1025,6 +1162,9 @@ function addText(x, y, str, col, size) {
 
 function kill(e, i) {
   G.enemies.splice(i, 1);
+  // 酛：撃破XP（蔵ゾーンの内外を問わず貯まる）と「湧き立ち」の小爆発
+  motoXp(e.hiochi || e.riceBoss ? MOTO.xp.boss : e.elite ? MOTO.xp.elite : MOTO.xp.mob);
+  if (motoHas('wakidachi') && !e.burstKilled) motoBurst(e.x, e.y); // 爆発で倒した敵は爆発させない
   // 連舞フィニッシュで吹き飛ばされている最中に倒れた非ボスは「死に体」を残す。
   // 撃破処理（発酵度・石高・ドロップ・音・パーティクル）は以降で通常どおり1回だけ走る＝二重カウントしない。
   if (e.flying > 0 && !e.hiochi && !e.riceBoss) {
@@ -1110,7 +1250,7 @@ function clearKura(k) {
   if (yeastGained) runLootPush({ type: 'yeast', name: YEASTS[yeastGained].name });
   updateKuraStates(); // 次の蔵を解錠
   saveMeta();
-  if (k.node.boss) { G.mode = 'regionclear'; G.clearT = 0; } // 総本山制圧でランを締める
+  if (k.node.boss) { G.mode = 'regionclear'; G.clearT = 0; motoReset(); } // 総本山制圧でランを締める（酛の選択待ちも畳む）
 }
 
 function backToWorld() { // 地域制圧のあとはワールドマップへ帰還
@@ -1126,6 +1266,13 @@ function update(dt) {
   if (G.mode === 'regionclear') { G.clearT += dt; return; }
   if (G.mode === 'result') { G.resultT += dt; return; }
   if (G.mode !== 'battle') return;
+  // 酛の3択が出ている間は完全停止（敵も湧きも発酵も進まない＝この間に殴られない）
+  if (G.moto && G.moto.pick) {
+    G.moto.pick.t += dt;
+    G.fieldStart += dt;                        // 湧きの逓増（蔵内時間）を止める
+    if (G.lastAtkT >= 0) G.lastAtkT += dt;     // 連舞の猶予も止める
+    return;
+  }
   const p = G.player;
 
   // アクティブ蔵を判定し、湧き・発酵度のコンテキストを付け替える
@@ -1135,7 +1282,7 @@ function update(dt) {
   G.rank = ak ? ak.rank : 0;    // 敵スケール（非アクティブ時は先鋒相当）
 
   // 移動（五百万石=速度+10%）
-  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1) * (gimFx().psp || 1) * (G.buffT > 0 ? 1.2 : 1); // 四国・急流／華やぎ
+  const spd = 215 * (META.rice && META.rice.name === '五百万石の魂' ? 1.1 : 1) * (gimFx().psp || 1) * (G.buffT > 0 ? 1.2 : 1) * motoSpdMul(); // 四国・急流／華やぎ／酛・軽き足取り
   let mx = 0, my = 0;
   if (keys.KeyW || keys.ArrowUp) my--;
   if (keys.KeyS || keys.ArrowDown) my++;
@@ -1264,6 +1411,7 @@ function update(dt) {
       }
       if (p.hp <= 0) {
         G.mode = 'over';
+        motoReset(); // 腐造：選択待ちを畳む（酛はここで終わり）
         if (G.kills > META.best) META.best = G.kills;
         saveMeta();
       }
@@ -1302,7 +1450,7 @@ function update(dt) {
   for (let i = G.waves.length - 1; i >= 0; i--) {
     const w = G.waves[i];
     if (w.delay && w.delay > 0) { w.delay -= dt; continue; }
-    w.r += 900 * dt;
+    w.r += (w.sp || 900) * dt;
     if (!w.deco) for (let j = G.enemies.length - 1; j >= 0; j--) {
       const e = G.enemies[j];
       if (Math.hypot(e.x - w.x, e.y - w.y) >= w.r + e.r) continue;
@@ -1317,6 +1465,9 @@ function update(dt) {
     }
     if (w.r > w.max) G.waves.splice(i, 1);
   }
+
+  // 飛び火の火花（見た目だけ・判定は打った瞬間に済んでいる）
+  for (let i = G.sparks.length - 1; i >= 0; i--) { G.sparks[i].t -= dt; if (G.sparks[i].t <= 0) G.sparks.splice(i, 1); }
 
   // コンボ・演出
   G.comboT -= dt;
@@ -1555,11 +1706,17 @@ function draw() {
     }
   }
 
-  // 衝撃波（浄化の輪は白、発酵波は金）
+  // 衝撃波（浄化の輪は白、発酵波は金、湧き立ちの爆発は橙）
   for (const w of G.waves) {
     cx.beginPath(); cx.arc(w.x, w.y, w.r, 0, 7);
-    cx.strokeStyle = (w.pure ? 'rgba(255,253,245,' : 'rgba(255,215,110,') + (1 - w.r / w.max) + ')';
-    cx.lineWidth = 16; cx.stroke();
+    cx.strokeStyle = (w.pure ? 'rgba(255,253,245,' : w.moto ? 'rgba(255,150,80,' : 'rgba(255,215,110,') + (1 - w.r / w.max) + ')';
+    cx.lineWidth = w.moto ? 8 : 16; cx.stroke();
+  }
+  // 飛び火：当てた敵から近くの1体へ走る火花
+  for (const s of G.sparks) {
+    cx.strokeStyle = 'rgba(255,180,90,' + (s.t / 0.16 * 0.8).toFixed(3) + ')';
+    cx.lineWidth = 2.5; cx.lineCap = 'round';
+    cx.beginPath(); cx.moveTo(s.x1, s.y1); cx.lineTo(s.x2, s.y2); cx.stroke();
   }
   // 9号のビーム
   if (G.beam) {
@@ -2034,6 +2191,13 @@ function draw() {
     cx.fillText('🍶', 16 + i * 32, 12);
   }
   cx.globalAlpha = 1;
+  // 酛（ラン内レベル）：純度の真下に小さく。数字を増やさず「Lvと帯」だけ
+  if (G.moto) {
+    cx.font = '12px serif'; cx.fillStyle = '#9a8c72';
+    cx.fillText('酛 Lv' + G.moto.lv, 16, 44);
+    cx.fillStyle = 'rgba(20,10,8,0.5)'; cx.fillRect(62, 50, 76, 4);
+    cx.fillStyle = '#b8a26e'; cx.fillRect(62, 50, 76 * Math.min(G.moto.xp / G.moto.need, 1), 4);
+  }
   // 撃破数
   cx.textAlign = 'right';
   cx.fillStyle = '#f2e9d4';
@@ -2108,6 +2272,9 @@ function draw() {
     cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
     cx.fillText('WASD/矢印: 櫂を運ぶ　Space: 櫂入れ（糖化）　X: 発酵', W / 2, H - 8);
   }
+
+  // 酛の3択（時が止まっている間だけ最前面に）
+  if (G.moto && G.moto.pick) drawMotoPick();
 
   // 上槽リザルト
   if (G.mode === 'result' && G.result) {
@@ -2209,8 +2376,8 @@ function draw() {
     cx.fillText(regionName() + '地方で ' + G.kills + ' 斬', W / 2, H / 2 - 84);
     cx.font = '15px serif';
     cx.fillStyle = '#b8d98a';
-    cx.fillText('獲得物と石高は持ち帰った。次の仕込みはもっと強い', W / 2, H / 2 - 54);
-    drawRunLoot(H / 2 - 26);
+    cx.fillText('獲得物と石高は持ち帰った。次の仕込みはもっと強い（酛は消える）', W / 2, H / 2 - 54);
+    drawMotoLoot(Math.min(drawRunLoot(H / 2 - 34) + 18, H - 150));
     // 出口は2つ：同じ地域でリトライ／ワールドマップへ帰って地域・難易度・装備を変える
     const overBtn = (b, label) => {
       cx.fillStyle = 'rgba(40,28,18,0.92)';
@@ -2228,6 +2395,110 @@ function draw() {
   }
 }
 
+// ---- 酛の3択カード（キーボード＝←→とSpace／タッチ＝カードをタップして決定）----
+const MOTO_CARD = { w: 248, h: 258, gap: 22 };
+function motoCardRect(i) {
+  const total = 3 * MOTO_CARD.w + 2 * MOTO_CARD.gap;
+  return { x: (W - total) / 2 + i * (MOTO_CARD.w + MOTO_CARD.gap), y: H / 2 - 128, w: MOTO_CARD.w, h: MOTO_CARD.h };
+}
+const MOTO_OK_BTN = { x: W / 2 - 90, y: H - 72, w: 180, h: 42 };
+// 幅に収まるところで折り返す（カード内の説明文用）
+function wrapLines(str, maxW) {
+  const out = [];
+  let line = '';
+  for (const ch of str) {
+    if (cx.measureText(line + ch).width > maxW && line) { out.push(line); line = ''; }
+    line += ch;
+  }
+  if (line) out.push(line);
+  return out;
+}
+function drawMotoPick() {
+  const P = G.moto.pick;
+  cx.fillStyle = 'rgba(14,9,6,0.82)';
+  cx.fillRect(0, 0, W, H);
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillStyle = '#ffd76e'; cx.font = 'bold 34px serif';
+  cx.fillText('酛が育った ― Lv' + G.moto.lv, W / 2, H / 2 - 190);
+  cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
+  cx.fillText('この仕込みのあいだだけ効く。ひとつ選べ', W / 2, H / 2 - 158);
+  P.opts.forEach((c, i) => {
+    const rc = motoCardRect(i), sel = P.sel === i;
+    cx.fillStyle = sel ? '#3d3020' : '#241c14';
+    cx.beginPath();
+    if (cx.roundRect) cx.roundRect(rc.x, rc.y, rc.w, rc.h, 12); else cx.rect(rc.x, rc.y, rc.w, rc.h);
+    cx.fill();
+    cx.lineWidth = sel ? 4 : 2;
+    cx.strokeStyle = sel ? '#ffd76e' : c.uni ? '#8a6ca8' : '#6a5c48';
+    cx.stroke();
+    const mx = rc.x + rc.w / 2;
+    // 枠の別（体感枠は紫・数値枠は土色）
+    cx.font = 'bold 12px serif';
+    cx.fillStyle = c.uni ? '#c9a0ff' : '#8a7c62';
+    cx.fillText(c.uni ? '― 体感の酛（1ランに1度）―' : '― 数値の酛（重ねて効く）―', mx, rc.y + 24);
+    cx.font = '52px serif';
+    cx.fillText(c.ico, mx, rc.y + 74);
+    cx.font = 'bold 23px serif';
+    cx.fillStyle = sel ? '#ffd76e' : '#f2e9d4';
+    cx.fillText(c.n, mx, rc.y + 122);
+    cx.font = '14px serif'; cx.fillStyle = '#c8bda0';
+    wrapLines(c.d, rc.w - 32).slice(0, 4).forEach((s, j) => cx.fillText(s, mx, rc.y + 154 + j * 21));
+    const has = c.uni ? 0 : motoN(c.k);
+    if (has) { cx.font = '13px serif'; cx.fillStyle = '#b8d98a'; cx.fillText('いま ×' + has, mx, rc.y + rc.h - 22); }
+    cx.font = '12px serif'; cx.fillStyle = '#6a5c48';
+    if (!G.touchUI) cx.fillText('［' + (i + 1) + '］', mx, rc.y + rc.h - 40);
+  });
+  if (G.touchUI) { // タッチ：カードをタップで選択→もう一度タップか「決める」で確定（既存メニューと同じ作法）
+    cx.fillStyle = 'rgba(255,215,110,0.9)';
+    cx.beginPath();
+    if (cx.roundRect) cx.roundRect(MOTO_OK_BTN.x, MOTO_OK_BTN.y, MOTO_OK_BTN.w, MOTO_OK_BTN.h, 10); else cx.rect(MOTO_OK_BTN.x, MOTO_OK_BTN.y, MOTO_OK_BTN.w, MOTO_OK_BTN.h);
+    cx.fill();
+    cx.font = 'bold 17px serif'; cx.fillStyle = '#3a2c14';
+    cx.fillText('この酛で決める', MOTO_OK_BTN.x + MOTO_OK_BTN.w / 2, MOTO_OK_BTN.y + MOTO_OK_BTN.h / 2);
+    cx.font = '12px serif'; cx.fillStyle = '#8a7c62';
+    cx.fillText('カードをタップして選ぶ', W / 2, MOTO_OK_BTN.y - 16);
+  } else {
+    cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
+    cx.fillText('←→で選ぶ　Space/Enterで決定　（1・2・3でも選べる）', W / 2, H - 44);
+  }
+  if (G.moto.pend > 0) {
+    cx.font = '13px serif'; cx.fillStyle = '#b8d98a';
+    cx.fillText('あと ' + G.moto.pend + ' 回、酛が育つ', W / 2, H / 2 + 150);
+  }
+}
+function motoTap(p) {
+  const P = G.moto.pick;
+  if (G.touchUI && inBtn(p, MOTO_OK_BTN)) { motoTake(P.sel); return; }
+  for (let i = 0; i < P.opts.length; i++) {
+    const rc = motoCardRect(i);
+    if (p.x > rc.x && p.x < rc.x + rc.w && p.y > rc.y && p.y < rc.y + rc.h) {
+      if (P.sel === i && P.t > 0.25) motoTake(i); else P.sel = i; // 2回タップで決定（誤爆防止に0.25秒の間を置く）
+      return;
+    }
+  }
+}
+// この酛で選んだ強化（獲得一覧に並べる。同じものは×nでまとめる）
+function motoSummaryLines() {
+  const M = G.moto;
+  if (!M || !M.picks.length) return [];
+  const cnt = {}, order = [];
+  for (const n of M.picks) { if (!(n in cnt)) { cnt[n] = 0; order.push(n); } cnt[n]++; }
+  const parts = order.map(n => n + (cnt[n] > 1 ? '×' + cnt[n] : ''));
+  const lines = [];
+  for (let i = 0; i < parts.length && lines.length < 3; i += 3) lines.push(parts.slice(i, i + 3).join('　'));
+  if (parts.length > 9) lines[2] += '　ほか' + (parts.length - 9) + '種';
+  return lines;
+}
+function drawMotoLoot(y0) {
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.font = 'bold 14px serif'; cx.fillStyle = '#c9a0ff';
+  cx.fillText('この酛で選んだ強化（酛 Lv' + (G.moto ? G.moto.lv : 1) + '）', W / 2, y0);
+  const lines = motoSummaryLines();
+  cx.font = '13px serif';
+  if (!lines.length) { cx.fillStyle = '#8a7c62'; cx.fillText('（なし）', W / 2, y0 + 20); return; }
+  lines.forEach((s, i) => { cx.fillStyle = '#d9c8a8'; cx.fillText(s, W / 2, y0 + 20 + i * 18); });
+}
+
 // 今回の獲得一覧（先頭8件＋「ほかN件」）：制圧完了・死亡どちらでも一括表示
 function drawRunLoot(y0) {
   const lines = runLootLines();
@@ -2235,9 +2506,11 @@ function drawRunLoot(y0) {
   cx.font = 'bold 14px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('今回の獲得', W / 2, y0);
   cx.font = '13px serif';
-  if (!lines.length) { cx.fillStyle = '#8a7c62'; cx.fillText('（なし）', W / 2, y0 + 22); return; }
+  if (!lines.length) { cx.fillStyle = '#8a7c62'; cx.fillText('（なし）', W / 2, y0 + 22); return y0 + 40; }
+  const n = Math.min(lines.length, 8);
   lines.slice(0, 8).forEach((s, i) => { cx.fillStyle = '#b8a26e'; cx.fillText(s, W / 2, y0 + 22 + i * 18); });
   if (lines.length > 8) { cx.fillStyle = '#8a7c62'; cx.fillText('ほか' + (lines.length - 8) + '件', W / 2, y0 + 22 + 8 * 18); }
+  return y0 + 22 + (lines.length > 8 ? n + 1 : n) * 18;
 }
 
 // ---- 共通UI：装備パネル（右下・半透明の板にまとめる）----
@@ -2633,7 +2906,7 @@ function drawRegionClear() {
   cx.fillText('総アルコール 100 ／ ここまで ' + G.kills + ' 斬', W / 2, 134);
   cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
   cx.fillText('4つの蔵を途切れず攻略した。次の地方は敵が強く、ドロップも上等になる', W / 2, 166);
-  drawRunLoot(206);
+  drawMotoLoot(Math.min(drawRunLoot(200) + 18, H - 130));
   if (G.clearT > 0.8 && Math.floor(G.t * 2) % 2 === 0) {
     cx.font = '17px serif'; cx.fillStyle = '#c8bda0';
     cx.fillText('Space でワールドマップへ帰還', W / 2, H - 44);
