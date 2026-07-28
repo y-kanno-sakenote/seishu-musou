@@ -294,13 +294,15 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyM') { META.mute = !META.mute; saveMeta(); }
   const ok = e.code === 'Space' || e.code === 'Enter';
   // 酛の3択（時が止まっている間）：他の操作より先に食う
+  // 決定は Enter と 1・2・3 のみ。攻撃のSpaceは受け付けない（押しっぱなしで3択が流れる事故を断つ）
   if (G.mode === 'battle' && G.moto && G.moto.pick) {
     const P = G.moto.pick;
     if (['ArrowLeft','KeyA'].includes(e.code)) P.sel = (P.sel + P.opts.length - 1) % P.opts.length;
     if (['ArrowRight','KeyD'].includes(e.code)) P.sel = (P.sel + 1) % P.opts.length;
+    if (P.held[e.code]) return; // 3択が開いた時点で押されていたキーは、一度離すまで決定にならない
     const num = ['Digit1','Digit2','Digit3'].indexOf(e.code);
-    if (num >= 0 && num < P.opts.length && P.t > 0.25) { motoTake(num); return; }
-    if (ok && P.t > 0.25) motoTake(P.sel); // 押しっぱなしで次の3択まで飛ばさないよう0.25秒の間を置く
+    if (num >= 0 && num < P.opts.length) { motoTake(num); return; } // 番号キー＝そのカードを即決定
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') motoTake(P.sel);
     return;
   }
   if (G.mode === 'title') { if (ok) G.mode = 'world'; return; }
@@ -363,7 +365,12 @@ addEventListener('keydown', e => {
     return;
   }
 });
-addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('keyup', e => {
+  keys[e.code] = false;
+  // 酛の3択：一度離したキーは、次の「新しい押下」から決定として受け付ける
+  const P = G.moto && G.moto.pick;
+  if (P && P.held) P.held[e.code] = false;
+});
 
 // ---- タッチ操作（スマホ）----
 // 左側ドラッグ=仮想スティック（タッチ時は櫂入れ自動）／右下ボタン=発酵・酵母切替／メニューはタップ
@@ -884,7 +891,9 @@ function motoOpen() {
   if (uni.length) opts.push(uni[Math.floor(Math.random() * uni.length)]);
   while (opts.length < 3 && num.length) opts.push(num.splice(Math.floor(Math.random() * num.length), 1)[0]);
   for (let i = opts.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = opts[i]; opts[i] = opts[j]; opts[j] = t; }
-  M.pick = { opts, sel: 0, t: 0 };
+  M.pick = { opts, sel: 0, t: 0, held: {} };
+  // 3択が開いた瞬間に押されていた決定キーを控える（離すまで決定に使えない＝押しっぱなしで流れない）
+  for (const c of ['Enter', 'NumpadEnter', 'Digit1', 'Digit2', 'Digit3']) if (keys[c]) M.pick.held[c] = true;
   sfx('joso');
 }
 function motoTake(i) {
@@ -2395,7 +2404,8 @@ function draw() {
   }
 }
 
-// ---- 酛の3択カード（キーボード＝←→とSpace／タッチ＝カードをタップして決定）----
+// ---- 酛の3択カード（キーボード＝←→で選びEnterか1・2・3で決定／タッチ＝カードをタップして決定）----
+// 攻撃キー（Space）は決定に使わない：押しっぱなしのキーリピートで3択が勝手に流れるため（実機フィードバック）
 const MOTO_CARD = { w: 248, h: 258, gap: 22 };
 function motoCardRect(i) {
   const total = 3 * MOTO_CARD.w + 2 * MOTO_CARD.gap;
@@ -2459,7 +2469,9 @@ function drawMotoPick() {
     cx.fillText('カードをタップして選ぶ', W / 2, MOTO_OK_BTN.y - 16);
   } else {
     cx.font = '14px serif'; cx.fillStyle = '#9a8c72';
-    cx.fillText('←→で選ぶ　Space/Enterで決定　（1・2・3でも選べる）', W / 2, H - 44);
+    cx.fillText('←→で選ぶ　Enterで決定　1・2・3で即決定', W / 2, H - 46);
+    cx.font = '12px serif'; cx.fillStyle = '#6a5c48';
+    cx.fillText('（櫂入れのSpaceでは決まらない。落ち着いて選べ）', W / 2, H - 26);
   }
   if (G.moto.pend > 0) {
     cx.font = '13px serif'; cx.fillStyle = '#b8d98a';
@@ -2468,7 +2480,7 @@ function drawMotoPick() {
 }
 function motoTap(p) {
   const P = G.moto.pick;
-  if (G.touchUI && inBtn(p, MOTO_OK_BTN)) { motoTake(P.sel); return; }
+  if (G.touchUI && inBtn(p, MOTO_OK_BTN) && P.t > 0.25) { motoTake(P.sel); return; } // 開いた直後の指の置きっぱなし対策
   for (let i = 0; i < P.opts.length; i++) {
     const rc = motoCardRect(i);
     if (p.x > rc.x && p.x < rc.x + rc.w && p.y > rc.y && p.y < rc.y + rc.h) {
