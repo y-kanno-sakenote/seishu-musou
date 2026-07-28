@@ -216,6 +216,8 @@ function sfx(type, mul) { // mul=音程倍率（連舞の段で打撃音を上�
   else if (type === 'boss') { tone('sawtooth', 90, 55, 0.6, 0.15); tone('sawtooth', 136, 82, 0.6, 0.1); }
   else if (type === 'hurt') tone('square', 160, 55, 0.2, 0.12);
   else if (type === 'block') tone('triangle', 900, 1300, 0.08, 0.07);
+  else if (type === 'tame') tone('sine', 58, 130, 0.13, 0.09); // 大刀フィニッシュの溜め（低く唸ってから斬る）
+  else if (type === 'goukai') { noise(0.26, 0.12); tone('sawtooth', 150, 36, 0.44, 0.15); tone('sine', 92, 30, 0.52, 0.2); } // 豪快斬りの一閃＝重低音
   else if (type === 'joso') { tone('sine', 523, 523, 0.12, 0.1); tone('sine', 659, 659, 0.12, 0.1, 0.12); tone('sine', 784, 784, 0.24, 0.12, 0.24); }
 }
 
@@ -469,6 +471,7 @@ const G = {
   eqMsg: null, // 装備画面の一時メッセージ {str, t}（2秒で消える）
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [], corpses: [], // corpses=連舞フィニッシュで吹き飛ぶ「死に体」（見た目＋巻き込みのみ）
+  scars: [], // 豪快斬りが地面に残す斬痕（見た目だけ・当たり判定なし）
   swing: null, art: null, spawnT: 0, // art=連舞フィニッシュの技（武器ごと。持続・多段するので swing とは別に持つ）
   comboStep: 0, lastAtkT: -99, // 連舞（4段コンボ）の現在段と最終攻撃時刻
   hiochi: null, alarm: 0,
@@ -504,7 +507,7 @@ function restartRegion() { // 腐造しても装備は残る。同じ地域・�
 function buildField() {
   G.kills = 0; G.combo = 0; G.comboT = 0;
   G.glucose = 0; G.shake = 0;
-  G.enemies = []; G.particles = []; G.waves = []; G.texts = []; G.corpses = [];
+  G.enemies = []; G.particles = []; G.waves = []; G.texts = []; G.corpses = []; G.scars = [];
   G.swing = null; G.art = null; G.spawnT = 0; G.alarm = 0;
   G.comboStep = 0; G.lastAtkT = -99;
   G.freezeT = 0; G.beam = null;
@@ -761,7 +764,12 @@ const FINISH = {
     arc: Math.PI,     // 前方180°（全周ではない＝「なぎ払う」画）
     range: 1.35,      // 射程倍率（大刀が地味という問題への手当て。他武器より一段長い）
     dmg: 2.5, kb: 3.0,
-    dur: 0.24, hitstop: 0.12, pitch: 1.9, shake: 11,
+    // 「重く豪快」は演出で作る：威力・射程・kbは据え置きのまま、溜め→一閃の時間配分と衝撃だけを盛る
+    charge: 0.12,     // 振りかぶり（この間は判定なし。溜め明けの1回で従来どおり180°を薙ぐ）
+    dur: 0.44,        // 0.12の溜め＋0.32の一閃・残光（判定は溜め明けの一瞬だけ）
+    hitstop: 0.14, pitch: 1.9, shake: 16, shakeMax: 18,
+    scar: 1.6,        // 薙いだ弧に沿って地面に残る斬痕の秒数（見た目のみ）
+    corpseKb: 1.35, corpseSpin: 1.9, corpseLife: 1.5, // 死に体の初速・回転・滞空（吹き飛ばしの画を強調）
   },
   soken: {
     name: '疾風乱舞', kind: 'dash',
@@ -830,6 +838,11 @@ function attack() {
     arc = COMBO.arc1 * wt.arc * sg.arc;
   }
   G.swing = { t: 0, face: p.face, range, arc, type, step, dir };
+  if (type === 'daito') { // 大刀は1〜3段も大ぶりに見せる（判定の range/arc は据え置き。厚みと残光だけ）
+    G.swing.life = SWEEP.time * 1.45; // 振り抜いた光跡が少し長く残る
+    G.swing.fat = true;               // 剣閃の帯を他武器より太く描く
+    if (step === 2) G.shake = Math.min(Math.max(G.shake, 4.5), 9); // 3段目の大薙ぎに小さな揺れ
+  }
   if (step === 2) { // 3段目：ヒットの有無に関わらず踏み込む（速度で消化・壁クランプは通常処理）
     p.dashT = COMBO.dashT3;
     p.dashVx = Math.cos(p.face) * COMBO.step3 / COMBO.dashT3;
@@ -887,6 +900,11 @@ function startFinish(type, wt, sg, box) {
     p.dashVy = Math.sin(p.face) * F.dist / F.dur;
   }
   if (F.kind === 'spin') p.atkCd = Math.max(p.atkCd, F.dur); // 車輪大回転：回転が終わるまで次の連は始まらない
+  if (F.charge) { // 溜めのある技（豪快斬り）：判定は溜め明けに1回だけ打つ（update側）
+    G.art.charge = F.charge;
+    sfx('tame');
+    return;
+  }
   artTick(); // 1発目（即時系はこれで打ち切り）
 }
 
@@ -925,7 +943,7 @@ function artTick() {
   if (!hit) return;
   sfx('hit', F.pitch + (F.pitchUp || 0) * i); // 多段は当てるたびに軽く音程が上がる
   if (last) { sfx('kill'); if (F.hitstop) G.hitstop = Math.max(G.hitstop, F.hitstop); } // 技の締めだけ手応えを出す
-  G.shake = Math.min(G.shake + F.shake * 0.4 + hit * 0.6, F.kind === 'dash' || F.kind === 'spin' ? 9 : 14);
+  G.shake = Math.min(G.shake + F.shake * 0.4 + hit * 0.6, F.kind === 'dash' || F.kind === 'spin' ? 9 : (F.shakeMax || 14));
   addGlucose(glu * COMBO.glu4);
 }
 
@@ -944,7 +962,7 @@ function finishHit(e, a, F, kdx, kdy, last) {
     return;
   }
   // 吹き飛び＝死に体・巻き込み。多段技は途中で吹き飛ばすと当たらなくなるので締めの一撃か撃破時だけ
-  if (last || e.hp <= 0) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; }
+  if (last || e.hp <= 0) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; e.corpseFx = F.corpseKb ? F : null; }
 }
 
 function ferment() {
@@ -1010,10 +1028,14 @@ function kill(e, i) {
   // 連舞フィニッシュで吹き飛ばされている最中に倒れた非ボスは「死に体」を残す。
   // 撃破処理（発酵度・石高・ドロップ・音・パーティクル）は以降で通常どおり1回だけ走る＝二重カウントしない。
   if (e.flying > 0 && !e.hiochi && !e.riceBoss) {
+    const cf = e.corpseFx; // 豪快斬りで飛んだ死に体だけ、初速・回転・滞空を増して派手に舞わせる
+    const life = COMBO.corpse * (cf ? cf.corpseLife : 1);
+    const km = cf ? cf.corpseKb : 1;
     G.corpses.push({
-      x: e.x, y: e.y, kx: e.kx, ky: e.ky, r: e.r,
+      x: e.x, y: e.y, kx: e.kx * km, ky: e.ky * km, r: e.r,
       glyph: e.elite ? '😈' : '🦠', size: e.elite ? 44 : 22,
-      spin: e.spin || 0, t: COMBO.corpse, max: COMBO.corpse, flyHit: [],
+      spin: e.spin || 0, spinMul: cf ? cf.corpseSpin : 1,
+      t: life, max: life, flyHit: [],
     });
   }
   sfx('kill');
@@ -1148,10 +1170,17 @@ function update(dt) {
   p.atkCd -= dt;
   if ((keys.Space || G.touchUI) && p.atkCd <= 0) attack(); // タッチ時は自動で櫂を振る
   if ((keys.KeyX || keys.Enter) && G.glucose >= yeastCost()) ferment();
-  if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
+  if (G.swing) { G.swing.t += dt; if (G.swing.t > (G.swing.life || SWEEP.time)) G.swing = null; } // 大刀は光跡が少し長く残る
   if (G.art) { // 武器ごとの技：多段（疾風乱舞・車輪大回転）は一定間隔でヒット判定を追加する
     const a = G.art, F = a.F;
     a.t += dt;
+    if (a.charge && !a.struck && a.t >= a.charge) { // 溜め明けの一閃：判定はこの瞬間の立ち位置で1回だけ
+      a.struck = true;
+      a.x0 = p.x; a.y0 = p.y; // 画と判定の位置を一致させる（溜め中に歩いた分を反映）
+      sfx('goukai');
+      if (F.scar) G.scars.push({ x: p.x, y: p.y, face: a.face, arc: F.arc, r: a.range, t: F.scar, max: F.scar, grow: (F.dur - F.charge) * 0.42 });
+      artTick();
+    }
     if (F.interval) while (a.tick < F.maxHit && a.t >= a.tick * F.interval) artTick();
     if (F.kind === 'dash' || F.kind === 'spin') a.trail.push({ x: p.x, y: p.y, t: a.t }); // 軌跡（技はプレイヤーに追従する）
     if (a.t >= a.dur) G.art = null;
@@ -1249,7 +1278,7 @@ function update(dt) {
     if (G.freezeT > 0) continue; // 凍結中は死に体も止まる（残り時間だけ進む）
     c.x += c.kx * dt; c.y += c.ky * dt;
     c.kx *= Math.pow(COMBO.corpseDecay, dt); c.ky *= Math.pow(COMBO.corpseDecay, dt);
-    c.spin += dt * 13 * (c.kx >= 0 ? 1 : -1);
+    c.spin += dt * 13 * (c.spinMul || 1) * (c.kx >= 0 ? 1 : -1);
     const kl = Math.hypot(c.kx, c.ky) || 1;
     for (const o of G.enemies) { // 生きている非ボスだけ巻き込む（1体につき同じ相手へは1回）
       if (o.hiochi || o.riceBoss || o.hp <= 0) continue;
@@ -1260,6 +1289,13 @@ function update(dt) {
       o.kx += c.kx / kl * 220; o.ky += c.ky / kl * 220;
       G.shake = Math.min(G.shake + 1.5, 9);
     }
+  }
+
+  // 斬痕（豪快斬りが地面に残す傷）：当たり判定は持たず、時間で薄れて消えるだけ
+  for (let i = G.scars.length - 1; i >= 0; i--) {
+    const s = G.scars[i];
+    s.t -= dt;
+    if (s.t <= 0) G.scars.splice(i, 1);
   }
 
   // 発酵の衝撃波
@@ -1478,6 +1514,26 @@ function draw() {
     cx.fillText(k.name + (k.state === 'cleared' ? '（浄化済）' : ''), k.x, k.y + k.size * 0.9 + 14);
   }
 
+  // 斬痕：豪快斬りが薙いだ弧に沿って地面に残る傷。暗色なので敵を白く塗り潰す心配がない
+  for (const s of G.scars) {
+    const k = s.t / s.max;             // 1→0で薄れる
+    const gk = Math.min((s.max - s.t) / (s.grow || 0.14), 1); // 刃が薙いだところまで伸びる（刃先を追い越さない）
+    const a0 = s.face - s.arc / 2, a1 = a0 + s.arc * gk;
+    cx.save();
+    cx.lineCap = 'round';
+    // 掘り返した土の縁（薄い明色）→ 傷の本体（暗色）の順で重ねる
+    cx.strokeStyle = 'rgba(198,172,124,' + (0.16 * k).toFixed(3) + ')';
+    cx.lineWidth = 11 * (0.55 + 0.45 * k);
+    cx.beginPath(); cx.arc(s.x, s.y, s.r * 0.9, a0, a1); cx.stroke();
+    cx.strokeStyle = 'rgba(44,28,14,' + (0.44 * k).toFixed(3) + ')';
+    cx.lineWidth = 6 * (0.5 + 0.5 * k);
+    cx.beginPath(); cx.arc(s.x, s.y, s.r * 0.9, a0, a1); cx.stroke();
+    cx.strokeStyle = 'rgba(44,28,14,' + (0.26 * k).toFixed(3) + ')';
+    cx.lineWidth = 3 * (0.5 + 0.5 * k);
+    cx.beginPath(); cx.arc(s.x, s.y, s.r * 0.72, a0 + 0.12, a1 - 0.12); cx.stroke();
+    cx.restore();
+  }
+
   // 米俵の山（障害物）：藁色の楕円の山＋俵の縄目（コライダーは円のまま）
   for (const o of G.obstacles) {
     const ry = o.r * 0.82; // 俵の山は横長の楕円
@@ -1594,7 +1650,10 @@ function draw() {
 
   // 櫂棒スイング＝連舞1〜3段（双剣は2本が左右から交差する）。4段目のフィニッシュは G.art 側で描く
   if (G.swing) {
-    const pr = G.swing.t / SWEEP.time;
+    const pr = Math.min(G.swing.t / SWEEP.time, 1);
+    // 大刀だけ SWEEP.time を過ぎても光跡を残す（over=残光の進み0→1。他武器は常に0で従来どおり）
+    const swLife = G.swing.life || SWEEP.time;
+    const over = swLife > SWEEP.time ? Math.max(G.swing.t - SWEEP.time, 0) / (swLife - SWEEP.time) : 0;
     const sa = G.swing.arc || SWEEP.arc;
     const sr = G.swing.range || SWEEP.range;
     const type = G.swing.type;
@@ -1703,22 +1762,26 @@ function draw() {
       cx.stroke();
     } else {
       const twin = G.swing.type === 'soken';
+      const fat = G.swing.fat; // 大刀：帯を太く・追従する光跡を長く（当たる range/arc は据え置き）
+      cx.save();
+      if (over > 0) cx.globalAlpha = Math.max(1 - over, 0); // 振り抜いたあとに残る光跡
       // 薙ぎ出しの端と進む向きを sdir で反転（2段目＝左薙ぎ）。双剣の交差はそのまま
       const blades = twin
         ? [{ from: face - sdir * sa / 2, dir: sdir }, { from: face + sdir * sa / 2, dir: -sdir }]
         : [{ from: face - sdir * sa / 2, dir: sdir }];
       for (const b of blades) {
         const lead = b.from + b.dir * sa * pr * (twin ? 0.5 : 1); // 双剣は中央で出会う
-        const tail = Math.min(sa * pr * (twin ? 0.5 : 1), 1.1); // 刃先に追従する帯だけを残す
+        const tail = Math.min(sa * pr * (twin ? 0.5 : 1), fat ? 1.6 : 1.1); // 刃先に追従する帯だけを残す
         const s0 = b.dir === 1 ? lead - tail : lead;
         const s1 = b.dir === 1 ? lead : lead + tail;
-        crescent(s0, s1);
-        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
+        crescent(s0, s1, fat ? 0.42 : 0); // 大刀は内側42%＝厚い帯
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : fat ? 9 : 7; cx.lineCap = 'round';
         cx.beginPath();
         cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
         cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
         cx.stroke();
       }
+      cx.restore();
     }
   }
 
@@ -1745,17 +1808,70 @@ function draw() {
     };
     cx.lineCap = 'round';
     if (a.type === 'daito') {
-      // 豪快斬り：前方180°の大なぎ払い。刃先に追従する帯だけを残し、面積で塗り潰さない
-      const sr = a.range, sweep = Math.PI;
-      const k = Math.min(pr / 0.55, 1); // 0.55で振り抜き、残りは余韻
-      const lead = a.face - sweep / 2 + sweep * k;
-      const tail = Math.min(sweep * 0.55, sweep * k);
-      band(a.x0, a.y0, sr * 0.52, sr, lead - tail, lead, 0.30 + 0.22 * fade); // 内側52%＝通常の三日月より太い帯＝豪快さ
-      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 10;
-      cx.beginPath();
-      cx.moveTo(a.x0 + Math.cos(lead) * 14, a.y0 + Math.sin(lead) * 14);
-      cx.lineTo(a.x0 + Math.cos(lead) * (sr - 6), a.y0 + Math.sin(lead) * (sr - 6));
-      cx.stroke();
+      // 豪快斬り：溜め（振りかぶり＋足元の予兆）→ 前方180°の一閃 → 金の残光。
+      // 白の広い面は敵を白抜けさせるので、帯は温白〜金のグラデーションで濃度を抑える
+      const sr = a.range, sweep = Math.PI, s0 = a.face - sweep / 2;
+      const ch = a.charge || 0;
+      if (a.t < ch) {
+        // ---- 溜め（判定なし。この間は櫂棒を引き絞り、足元に光が集まる）----
+        const t = a.t / ch;
+        const bang = s0 - 0.55 + 0.22 * t; // 薙ぎ出し側へ大きく引く
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 12;
+        cx.beginPath();
+        cx.moveTo(p.x - Math.cos(bang) * 10, p.y - Math.sin(bang) * 10);
+        cx.lineTo(p.x + Math.cos(bang) * (30 + 26 * t), p.y + Math.sin(bang) * (30 + 26 * t));
+        cx.stroke();
+        // 足元の集光（金色の楕円）
+        const gg = cx.createRadialGradient(p.x, p.y + 8, 2, p.x, p.y + 8, 44 + 14 * t);
+        gg.addColorStop(0, 'rgba(255,206,110,' + (0.18 + 0.24 * t).toFixed(3) + ')');
+        gg.addColorStop(1, 'rgba(255,206,110,0)');
+        cx.beginPath(); cx.ellipse(p.x, p.y + 8, 44 + 14 * t, 18 + 6 * t, 0, 0, 7);
+        cx.fillStyle = gg; cx.fill();
+        // 予兆：これから薙ぐ弧に沿って光の輪が締まっていく（大槌の溜めリングを大刀向けに弧で）
+        cx.strokeStyle = 'rgba(255,206,110,' + (0.20 + 0.42 * t).toFixed(3) + ')';
+        cx.lineWidth = 2 + 2 * t;
+        cx.setLineDash([12, 10]); cx.lineDashOffset = -G.t * 110;
+        cx.beginPath(); cx.arc(p.x, p.y, sr * (0.98 - 0.3 * t), s0, s0 + sweep); cx.stroke();
+        cx.setLineDash([]);
+      } else {
+        // ---- 一閃 ----
+        const q = Math.min((a.t - ch) / Math.max(a.dur - ch, 0.001), 1);
+        const k = Math.min(q / 0.42, 1);                      // 0.42で180°を薙ぎ切る（＝約0.13秒）
+        const glow = q <= 0.42 ? 1 : Math.max(1 - (q - 0.42) / 0.58, 0); // 以降は残光として約0.19秒で消える
+        const lead = s0 + sweep * k;
+        // 温白〜金の帯（内側ほど金・刃先ほど温白）
+        const bandG = (r0, r1, b0, b1, al) => {
+          cx.beginPath();
+          cx.arc(a.x0, a.y0, r1, b0, b1);
+          cx.arc(a.x0, a.y0, r0, b1, b0, true);
+          cx.closePath();
+          const g = cx.createRadialGradient(a.x0, a.y0, r0, a.x0, a.y0, r1);
+          g.addColorStop(0, 'rgba(255,190,80,0)');
+          g.addColorStop(0.55, 'rgba(255,204,104,' + (al * 0.66).toFixed(3) + ')');
+          g.addColorStop(1, 'rgba(255,238,190,' + al.toFixed(3) + ')');
+          cx.fillStyle = g; cx.fill();
+        };
+        // ① 薙ぎ終えた弧の全域に残る残光（これが「太く長い半月」の芯）
+        bandG(sr * 0.46, sr, s0, lead, 0.15 * glow);
+        // ② 刃先に追従する厚い帯
+        const tail = Math.min(sweep * 0.62, sweep * k);
+        bandG(sr * 0.38, sr, lead - tail, lead, 0.34 * glow);
+        // ③ 刃先のエッジライン（ここだけ明るく＝面で白くしない）
+        cx.strokeStyle = 'rgba(255,244,206,' + (0.62 * glow).toFixed(3) + ')';
+        cx.lineWidth = 3.5;
+        cx.beginPath(); cx.arc(a.x0, a.y0, sr, lead - tail, lead); cx.stroke();
+        cx.strokeStyle = 'rgba(255,214,120,' + (0.30 * glow).toFixed(3) + ')';
+        cx.lineWidth = 2;
+        cx.beginPath(); cx.arc(a.x0, a.y0, sr * 0.46, s0, lead); cx.stroke();
+        // ④ 櫂棒：薙ぎ切ったあとも振り抜いた姿勢が少し残る
+        cx.globalAlpha = Math.max(0.25 + 0.75 * glow, 0);
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 12;
+        cx.beginPath();
+        cx.moveTo(a.x0 - Math.cos(lead) * 12, a.y0 - Math.sin(lead) * 12);
+        cx.lineTo(a.x0 + Math.cos(lead) * (sr - 4), a.y0 + Math.sin(lead) * (sr - 4));
+        cx.stroke();
+        cx.globalAlpha = 1;
+      }
     } else if (a.type === 'yari') {
       // 貫天の大突き：判定と同じ長さ・幅の一直線ライン（帯は薄く、芯だけ明るく）
       const cos = Math.cos(a.face), sin = Math.sin(a.face);
