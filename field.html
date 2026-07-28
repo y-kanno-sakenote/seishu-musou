@@ -469,7 +469,7 @@ const G = {
   eqMsg: null, // 装備画面の一時メッセージ {str, t}（2秒で消える）
   kuraAlcohol: 0, kuraStart: 0, hiochiDone: false,
   player: null, enemies: [], particles: [], waves: [], texts: [], corpses: [], // corpses=連舞フィニッシュで吹き飛ぶ「死に体」（見た目＋巻き込みのみ）
-  swing: null, spawnT: 0,
+  swing: null, art: null, spawnT: 0, // art=連舞フィニッシュの技（武器ごと。持続・多段するので swing とは別に持つ）
   comboStep: 0, lastAtkT: -99, // 連舞（4段コンボ）の現在段と最終攻撃時刻
   hiochi: null, alarm: 0,
   riceBoss: null, riceBossDone: false, // 洗脳された米武将（浄化するまで上槽できない）
@@ -505,7 +505,7 @@ function buildField() {
   G.kills = 0; G.combo = 0; G.comboT = 0;
   G.glucose = 0; G.shake = 0;
   G.enemies = []; G.particles = []; G.waves = []; G.texts = []; G.corpses = [];
-  G.swing = null; G.spawnT = 0; G.alarm = 0;
+  G.swing = null; G.art = null; G.spawnT = 0; G.alarm = 0;
   G.comboStep = 0; G.lastAtkT = -99;
   G.freezeT = 0; G.beam = null;
   G.banner = null; G.flash = null; G.hitstop = 0; G.buffT = 0;
@@ -733,10 +733,7 @@ const COMBO = {
   dmg3: 1.1,           // 3段目の威力倍率
   step3: 25,           // 3段目の踏み込みpx（空振りでも出る＝「踏み込んで刻む」表現）
   dashT3: 0.08,        // 3段目の踏み込みにかける時間（秒）
-  arc4: Math.PI * 2,   // 4段目＝全周360°の一掃（全武器共通）
-  range4: 1.25,        // 4段目の射程倍率
-  dmg4: 2.0,           // 4段目の威力倍率
-  kb4: 2.5,            // 4段目のノックバック倍率（ボス級は除外）
+  // 4段目（フィニッシュ）の形・威力・ノックバックは武器ごとに別の「技」＝下の FINISH が持つ（旧 arc4/range4/dmg4/kb4 は廃止）
   glu4: 3.0,           // 4段目ヒット時の糖化補正。雑魚を5体1組・HP20にした結果ヒット数が減り発酵が2回まで落ちたので、一掃で一気に回収する形で補正（実測で3〜4回に回復）
   pitch: [1, 1.25, 1.5, 2], // 打撃音の音程（ド→ミ→ソ→高いド）
   fly: 0.5,            // 吹き飛び状態の秒数
@@ -754,6 +751,60 @@ const SINGLE = {
   naginata: { arc: 1.05, range: 1,    dmg: 1.15, hits: 1 },             // 薙刀：94.5°は広すぎたので66°に締め、1ダメ足りず3発だった分を底上げ
 };
 
+// ---- 連舞フィニッシュ＝武器ごとの「技」（数値はすべて叩き台。実測で詰める）----
+// kind: arc=扇/全周の一撃 ／ line=直線の貫通突き ／ dash=突進しながらの多段 ／ spin=回転しながらの多段
+// dmg は「単発1振りが1体に与える威力（双剣の2発目込み）」に対する倍率。多段は1ヒットあたり
+// kb は雑魚260・隊長90・ボス30という既存ノックバック基準値への倍率（ボス級は倍率を掛けない＝耐性は現行のまま）
+const FINISH = {
+  daito: {
+    name: '豪快斬り', kind: 'arc',
+    arc: Math.PI,     // 前方180°（全周ではない＝「なぎ払う」画）
+    range: 1.35,      // 射程倍率（大刀が地味という問題への手当て。他武器より一段長い）
+    dmg: 2.5, kb: 3.0,
+    dur: 0.24, hitstop: 0.12, pitch: 1.9, shake: 11,
+  },
+  soken: {
+    name: '疾風乱舞', kind: 'dash',
+    dist: 90, dur: 0.35,   // face方向へ90pxを0.35秒で駆け抜ける（無敵なし・壁と障害物は通常クランプ）
+    radius: 58,            // 駆け抜けながら全周58pxを刻む
+    interval: 0.06, maxHit: 6, // 約0.06秒間隔で最大6ヒット（1体にも最大6回）
+    // 0.6だと3ヒットで19.6ダメージ＝HP20の雑魚が生き残ったので0.62（3ヒット確殺／6ヒット当てれば隊長も半分）
+    dmg: 0.62, kb: 0.5, kbLast: 2.0, // 途中のノックバックは弱く（範囲外へ逃さない）、最後の一撃だけ吹き飛ばす
+    hitstop: 0.05, pitch: 1.8, pitchUp: 0.14, shake: 3,
+  },
+  yari: {
+    name: '貫天の大突き', kind: 'line',
+    len: 450, wide: 60,   // 線分と点の距離で判定する直線の貫通突き
+    dmg: 2.2, kb: 3.2,    // ノックバックは突きの進行方向へ（押し出される画）
+    dur: 0.26, hitstop: 0.12, pitch: 1.7, shake: 10,
+  },
+  otsuchi: {
+    name: '大地割り', kind: 'arc',
+    arc: Math.PI * 2,     // 現行の全周衝撃波をここに残す
+    range: 1.25, dmg: 2.0, kb: 2.6,
+    stun: 0.5,            // 生き残った非ボスの足を0.5秒止める（ボス級には効かない）
+    dur: 0.32, hitstop: 0.14, pitch: 1.3, shake: 14,
+  },
+  naginata: {
+    name: '車輪大回転', kind: 'spin',
+    dur: 0.5, turns: 2,   // 全周×2回転・0.5秒。持続中は回転しながら歩ける
+    range: 1.1, interval: 0.12, maxHit: 4, // 約0.12秒間隔で最大4ヒット
+    // 0.55だと4ヒット全部当てないと雑魚が落ちず、回転の途中で入ってきた敵が生き残った。0.65＝3ヒット確殺
+    dmg: 0.65, kb: 0.6, kbLast: 1.8,
+    hitstop: 0, pitch: 2.0, shake: 3,
+  },
+};
+
+function critRate() { return (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0); }
+// 単発1振りが1体に与える威力。技（FINISH.dmg）の基準はここ＝武器を替えても「単発何発ぶんか」で読める
+function singleDmg(wt, sg, crit) {
+  return weaponDmg() * wt.dmg * sg.dmg * (sg.hits === 2 ? 1 + sg.hit2 : 1) * (crit ? 2 : 1);
+}
+// 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
+function addGlucose(n) {
+  G.glucose = Math.min(G.glucose + n * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
+}
+
 function attack() {
   const p = G.player;
   const wt = wtypeOf(META.weapon); // 武器種：大刀=標準／双剣=速い小範囲／長槍=直線長リーチ
@@ -764,33 +815,29 @@ function attack() {
   else G.comboStep = 0;
   G.lastAtkT = G.t;
   const step = G.comboStep;
-  const finish = step === 3;
   const dir = step === 1 ? -1 : 1; // 2段目は逆手（スイング方向を反転）
-  const sg = SINGLE[(META.weapon && META.weapon.type) || 'daito'] || SINGLE.daito;
+  const type = (META.weapon && META.weapon.type) || 'daito';
+  const sg = SINGLE[type] || SINGLE.daito;
   const box = styleIs('box') ? 1.5 : 1; // 箱麹：範囲1.5倍（＝糖化効率）
-  // 段ごとの間合いと角度：1〜3段は前方だけの単発、4段目だけ全周の一掃
+  if (step === 3) { startFinish(type, wt, sg, box); return; } // 4段目＝武器ごとの技（形も威力も別物）
+  // 1〜3段は前方だけの単発
   let range, arc;
-  if (finish) {
-    range = SWEEP.range * wt.range * box * COMBO.range4;
-    arc = COMBO.arc4; // 全周は全武器共通（射程だけ武器種係数が乗る）
-  } else if (step === 2) {
+  if (step === 2) {
     range = SWEEP.range * wt.range * box * COMBO.range3 * sg.range;
     arc = COMBO.arc3 * wt.arc * sg.arc;
   } else {
     range = SWEEP.range * wt.range * box * COMBO.range1 * sg.range;
     arc = COMBO.arc1 * wt.arc * sg.arc;
   }
-  G.swing = { t: 0, face: p.face, range, arc, type: (META.weapon && META.weapon.type) || 'daito', step, dir, finish };
+  G.swing = { t: 0, face: p.face, range, arc, type, step, dir };
   if (step === 2) { // 3段目：ヒットの有無に関わらず踏み込む（速度で消化・壁クランプは通常処理）
     p.dashT = COMBO.dashT3;
     p.dashVx = Math.cos(p.face) * COMBO.step3 / COMBO.dashT3;
     p.dashVy = Math.sin(p.face) * COMBO.step3 / COMBO.dashT3;
   }
   let hit = 0;
-  const critRate = (META.rice && META.rice.name === '山田錦の魂' ? 0.15 : 0) + (kojiIs('yellow') ? 0.15 : 0);
-  const crit = Math.random() < critRate;
-  const stepMul = step === 2 ? COMBO.dmg3 : finish ? COMBO.dmg4 : 1;
-  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * stepMul * sg.dmg; // 威力の武器補正は4段目にも掛ける（掛けないと双剣・薙刀の一掃が雑魚を確殺できなかった）
+  const crit = Math.random() < critRate();
+  const dmg = weaponDmg() * wt.dmg * (crit ? 2 : 1) * (step === 2 ? COMBO.dmg3 : 1) * sg.dmg;
   for (const e of G.enemies) {
     const dx = e.x - p.x, dy = e.y - p.y;
     const d = Math.hypot(dx, dy);
@@ -804,19 +851,100 @@ function attack() {
     if (sg.hits === 2) { e.hp -= dmg * mul * sg.hit2; e.twin = 0.12; } // 双剣：同じ敵に2発目（糖化は1回分のまま）。twin=2発目の追撃エフェクト
     if (crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
     const boss = e.hiochi || e.riceBoss;
-    const kb = (boss ? 30 : e.elite ? 90 : 260) * (finish && !boss ? COMBO.kb4 : 1); // ボス級のノックバック耐性は現行のまま
+    const kb = boss ? 30 : e.elite ? 90 : 260; // ボス級のノックバック耐性は現行のまま
     e.kx += Math.cos(p.face + da * 0.4) * kb;
     e.ky += Math.sin(p.face + da * 0.4) * kb;
-    if (finish && !boss) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; } // 吹き飛び：他の雑魚を巻き込む
   }
   if (hit) {
-    sfx('hit', COMBO.pitch[step]); // 段が上がるほど音程が上がる（ド→ミ→ソ→高いド）
-    if (finish) { sfx('kill'); G.hitstop = 0.1; } // 一掃の手応え（新規音は作らない・その場で回るので前進なし）
+    sfx('hit', COMBO.pitch[step]); // 段が上がるほど音程が上がる（ド→ミ→ソ）
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
-    // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
-    // 単発化で1振りのヒット数が減るぶん、4段目の一掃だけ多めに回収する
-    G.glucose = Math.min(G.glucose + hit * (finish ? COMBO.glu4 : 1) * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
+    addGlucose(hit);
   }
+}
+
+// ---- 連舞フィニッシュ（武器ごとの技）----
+// 技は G.art として持続する。arc/line は即時1発、dash/spin は interval ごとに artTick() を回す。
+// 描画も G.art が担う（4段目は G.swing を作らない）
+function startFinish(type, wt, sg, box) {
+  const p = G.player;
+  const F = FINISH[type] || FINISH.daito;
+  const crit = Math.random() < critRate();
+  G.swing = null;
+  G.art = {
+    type, F, face: p.face, crit,
+    t: 0, dur: F.dur, tick: 0,
+    hits: new Map(), // この技で敵ごとに当てた回数（1体あたりの上限と糖化の判定に使う）
+    marks: [], trail: [], cracks: null,
+    x0: p.x, y0: p.y, // 即時ヒット系は発動位置で描く（判定を取った位置と画を一致させる）
+    range: SWEEP.range * wt.range * box * (F.range || 1),
+    radius: (F.radius || 0) * box,
+    len: (F.len || 0) * box, wide: (F.wide || 0) * box, // 箱麹は直線技にも効く（範囲1.5倍の一貫）
+    dmg: singleDmg(wt, sg, crit) * F.dmg,
+  };
+  if (F.kind === 'dash') { // 疾風乱舞：無敵なし。壁・障害物クランプは通常の移動処理に任せる
+    p.dashT = F.dur;
+    p.dashVx = Math.cos(p.face) * F.dist / F.dur;
+    p.dashVy = Math.sin(p.face) * F.dist / F.dur;
+  }
+  if (F.kind === 'spin') p.atkCd = Math.max(p.atkCd, F.dur); // 車輪大回転：回転が終わるまで次の連は始まらない
+  artTick(); // 1発目（即時系はこれで打ち切り）
+}
+
+function artTick() {
+  const a = G.art;
+  if (!a) return;
+  const p = G.player, F = a.F;
+  const i = a.tick++;
+  const last = !F.maxHit || i === F.maxHit - 1;
+  const cos = Math.cos(a.face), sin = Math.sin(a.face);
+  if (F.kind === 'dash' || F.kind === 'spin') a.marks.push({ x: p.x, y: p.y, born: a.t, ang: a.face + (Math.random() - 0.5) * 1.2 });
+  let hit = 0, glu = 0;
+  for (const e of G.enemies) {
+    if (e.hp <= 0) continue;
+    const dx = e.x - p.x, dy = e.y - p.y;
+    let kdx = dx, kdy = dy; // ノックバック方向（既定は放射方向）
+    if (F.kind === 'line') { // 線分と点の距離で判定＝一直線上の敵を全員貫く
+      const t = Math.max(0, Math.min(a.len, dx * cos + dy * sin));
+      if (Math.hypot(dx - t * cos, dy - t * sin) > a.wide / 2 + e.r) continue;
+      kdx = cos; kdy = sin; // 突きの進行方向へ押し出す
+    } else if (F.kind === 'dash' || F.kind === 'spin') {
+      if (Math.hypot(dx, dy) > (F.kind === 'dash' ? a.radius : a.range) + e.r) continue;
+    } else {
+      if (Math.hypot(dx, dy) > a.range + e.r) continue;
+      let da = Math.atan2(dy, dx) - a.face;
+      da = Math.atan2(Math.sin(da), Math.cos(da));
+      if (Math.abs(da) > F.arc / 2) continue;
+    }
+    const n = a.hits.get(e) || 0;
+    if (F.maxHit && n >= F.maxHit) continue; // 1体あたりの多段上限
+    a.hits.set(e, n + 1);
+    hit++;
+    if (n === 0) glu++; // 糖化は1体につき1回だけ＝多段技でも1振りの回収量は単発系と揃う
+    finishHit(e, a, F, kdx, kdy, last);
+  }
+  if (!hit) return;
+  sfx('hit', F.pitch + (F.pitchUp || 0) * i); // 多段は当てるたびに軽く音程が上がる
+  if (last) { sfx('kill'); if (F.hitstop) G.hitstop = Math.max(G.hitstop, F.hitstop); } // 技の締めだけ手応えを出す
+  G.shake = Math.min(G.shake + F.shake * 0.4 + hit * 0.6, F.kind === 'dash' || F.kind === 'spin' ? 9 : 14);
+  addGlucose(glu * COMBO.glu4);
+}
+
+function finishHit(e, a, F, kdx, kdy, last) {
+  const boss = e.hiochi || e.riceBoss;
+  const mul = (e.hiochi && riceHas('hiire') ? 1.5 : 1) * (boss && kojiIs('black') ? 1.25 : 1) * (G.freezeT > 0 ? 1.5 : 1);
+  e.hp -= a.dmg * mul; e.flash = 0.12;
+  if (a.crit && (e.elite || e.hiochi)) addText(e.x, e.y - 30, '会心！', '#ffd76e', 14);
+  const kl = Math.hypot(kdx, kdy) || 1;
+  const kb = (boss ? 30 : e.elite ? 90 : 260) * (boss ? 1 : (last ? (F.kbLast || F.kb) : F.kb));
+  e.kx += kdx / kl * kb; e.ky += kdy / kl * kb;
+  if (boss) return; // ボス級は吹き飛ばない・スタンもしない（現行の耐性を維持）
+  if (F.stun) { // 大地割り：倒れた敵は死に体、生き残った敵は足が止まる（吹き飛ばすより足止めが技の主眼）
+    if (e.hp > 0) { e.stunT = Math.max(e.stunT || 0, F.stun); e.kx *= 0.25; e.ky *= 0.25; }
+    else { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; }
+    return;
+  }
+  // 吹き飛び＝死に体・巻き込み。多段技は途中で吹き飛ばすと当たらなくなるので締めの一撃か撃破時だけ
+  if (last || e.hp <= 0) { e.flying = COMBO.fly; e.flyHit = []; e.spin = 0; }
 }
 
 function ferment() {
@@ -1021,6 +1149,13 @@ function update(dt) {
   if ((keys.Space || G.touchUI) && p.atkCd <= 0) attack(); // タッチ時は自動で櫂を振る
   if ((keys.KeyX || keys.Enter) && G.glucose >= yeastCost()) ferment();
   if (G.swing) { G.swing.t += dt; if (G.swing.t > SWEEP.time) G.swing = null; }
+  if (G.art) { // 武器ごとの技：多段（疾風乱舞・車輪大回転）は一定間隔でヒット判定を追加する
+    const a = G.art, F = a.F;
+    a.t += dt;
+    if (F.interval) while (a.tick < F.maxHit && a.t >= a.tick * F.interval) artTick();
+    if (F.kind === 'dash' || F.kind === 'spin') a.trail.push({ x: p.x, y: p.y, t: a.t }); // 軌跡（技はプレイヤーに追従する）
+    if (a.t >= a.dur) G.art = null;
+  }
   p.inv -= dt;
 
   // 敵スポーン：X秒ごとに1組（蔵内時間と蔵の番手で間隔が縮む＝密度が上がる意図は従来どおり）
@@ -1238,9 +1373,8 @@ function bossArrow(e, glyph) {
 // ヒット時のフラッシュとフィニッシュ剣閃の白さを抑える（数値は叩き台）
 const FX = {
   flash: 'brightness(1.6)',   // ヒットの白フラッシュ（3.0は白飛びして別キャラに見えた）
-  finEdge: 'rgba(255,250,235,0.8)', // フィニッシュの穂先ハイライト（長槍のスピードライン）
   crescentIn: 0.6,            // 三日月剣閃の内側半径（sr比）。小さいほど帯が太い＝敵を覆う
-  ringIn: 0.82,               // 4段目の全周一掃は「輪」。太いと円盤に見えて中の敵を塗り潰す
+  // 4段目（技）の剣閃は G.art の描画側が個別に持つ（技ごとに形が違うため共通化できない）
 };
 // 視認性のトーン（叩き台）：地面と米俵を沈め、敵グリフに接地影を敷いて浮かせる
 const TONE = {
@@ -1458,7 +1592,7 @@ function draw() {
     drawKurabito(p.x, p.y, 18);
   }
 
-  // 櫂棒スイング（双剣は2本が左右から交差する）
+  // 櫂棒スイング＝連舞1〜3段（双剣は2本が左右から交差する）。4段目のフィニッシュは G.art 側で描く
   if (G.swing) {
     const pr = G.swing.t / SWEEP.time;
     const sa = G.swing.arc || SWEEP.arc;
@@ -1466,7 +1600,6 @@ function draw() {
     const type = G.swing.type;
     const face = G.swing.face;
     const sdir = G.swing.dir || 1; // 連の段によるスイング方向（2段目＝左薙ぎ）
-    const fin = !!G.swing.finish;
     // 三日月剣閃（cool.html と同じ考え方）：中心から塗らず、外周付近だけを弧の帯にする。
     // パイ型ベタ塗りは面積が大きく、下にいる敵を白く塗り潰していたための形状変更。
     const crescent = (s0, s1, innerRatio) => {
@@ -1477,24 +1610,15 @@ function draw() {
       cx.closePath();
       const g = cx.createRadialGradient(p.x, p.y, inner, p.x, p.y, sr);
       g.addColorStop(0, 'rgba(255,240,190,0)');
-      g.addColorStop(0.7, fin ? 'rgba(255,250,235,0.30)' : 'rgba(255,240,190,0.28)');
-      g.addColorStop(1, fin ? 'rgba(255,250,235,0.56)' : 'rgba(255,240,190,0.52)'); // 帯に重なった敵が白飛びしない濃さ（実測で調整）
+      g.addColorStop(0.7, 'rgba(255,240,190,0.28)');
+      g.addColorStop(1, 'rgba(255,240,190,0.52)'); // 帯に重なった敵が白飛びしない濃さ（実測で調整）
       cx.fillStyle = g; cx.fill();
       cx.beginPath(); cx.arc(p.x, p.y, sr, s0, s1); // 刃先のエッジライン
-      cx.lineWidth = fin ? 3.5 : 2.5;
-      cx.strokeStyle = fin ? 'rgba(255,250,235,0.66)' : 'rgba(255,244,206,0.62)';
+      cx.lineWidth = 2.5;
+      cx.strokeStyle = 'rgba(255,244,206,0.62)';
       cx.stroke();
     };
-    if (fin) {
-      // 4段目：全周360°の一掃。プレイヤーを中心に一周する細い輪＋ぐるりと回る櫂棒（全武器共通）
-      crescent(0, Math.PI * 2, FX.ringIn);
-      const lead = face + sdir * Math.PI * 2 * pr;
-      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = type === 'soken' ? 6 : 8; cx.lineCap = 'round';
-      cx.beginPath();
-      cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
-      cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
-      cx.stroke();
-    } else if (type === 'yari') {
+    if (type === 'yari') {
       // 長槍：弧を描かず「突き」。柄がface方向へ伸びて戻る＋スピードライン
       const cos = Math.cos(face), sin = Math.sin(face);
       const nx = -sin, ny = cos; // 柄に直交する法線
@@ -1513,9 +1637,9 @@ function draw() {
         const ox = nx * off, oy = ny * off;
         const d0 = ext * 0.4, d1 = ext;
         const g = cx.createLinearGradient(p.x + cos * d0 + ox, p.y + sin * d0 + oy, p.x + cos * d1 + ox, p.y + sin * d1 + oy);
-        g.addColorStop(0, fin ? 'rgba(255,250,235,0)' : 'rgba(255,240,190,0)');
-        g.addColorStop(1, fin ? FX.finEdge : 'rgba(255,240,190,0.75)');
-        cx.strokeStyle = g; cx.lineWidth = (off === 0 ? 2 : 1.4) + (fin ? 1.2 : 0);
+        g.addColorStop(0, 'rgba(255,240,190,0)');
+        g.addColorStop(1, 'rgba(255,240,190,0.75)');
+        cx.strokeStyle = g; cx.lineWidth = off === 0 ? 2 : 1.4;
         cx.beginPath();
         cx.moveTo(p.x + cos * d0 + ox, p.y + sin * d0 + oy);
         cx.lineTo(p.x + cos * d1 + ox, p.y + sin * d1 + oy);
@@ -1572,7 +1696,7 @@ function draw() {
       const tail = Math.min(sa * 0.8, sweep * pr); // lead-tail〜lead の弧で追従
       const t0 = lead - sdir * tail;
       crescent(Math.min(t0, lead), Math.max(t0, lead));
-      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = fin ? 9 : 7; cx.lineCap = 'round';
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 7; cx.lineCap = 'round';
       cx.beginPath();
       cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
       cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
@@ -1589,12 +1713,145 @@ function draw() {
         const s0 = b.dir === 1 ? lead - tail : lead;
         const s1 = b.dir === 1 ? lead : lead + tail;
         crescent(s0, s1);
-        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = (twin ? 5 : 7) + (fin ? 2 : 0); cx.lineCap = 'round';
+        cx.strokeStyle = '#8a5a2b'; cx.lineWidth = twin ? 5 : 7; cx.lineCap = 'round';
         cx.beginPath();
         cx.moveTo(p.x + Math.cos(lead) * 14, p.y + Math.sin(lead) * 14);
         cx.lineTo(p.x + Math.cos(lead) * (sr - 6), p.y + Math.sin(lead) * (sr - 6));
         cx.stroke();
       }
+    }
+  }
+
+  // 連舞フィニッシュ＝武器ごとの技（G.art）。純白のベタ塗りは下の敵を塗り潰すので、温白の細い帯だけで描く
+  if (G.art) {
+    const a = G.art, F = a.F;
+    const pr = Math.min(a.t / a.dur, 1);
+    const fade = 1 - pr;
+    const warm = al => 'rgba(255,244,206,' + Math.max(al, 0).toFixed(3) + ')';
+    // 三日月の帯（中心は塗らず外周だけ）。豪快斬り・車輪大回転で共用
+    const band = (ox, oy, r0, r1, s0, s1, al) => {
+      cx.beginPath();
+      cx.arc(ox, oy, r1, s0, s1);
+      cx.arc(ox, oy, r0, s1, s0, true);
+      cx.closePath();
+      const g = cx.createRadialGradient(ox, oy, r0, ox, oy, r1);
+      g.addColorStop(0, 'rgba(255,240,190,0)');
+      g.addColorStop(0.72, warm(al * 0.5));
+      g.addColorStop(1, warm(al));
+      cx.fillStyle = g; cx.fill();
+      cx.beginPath(); cx.arc(ox, oy, r1, s0, s1); // 刃先のエッジライン
+      cx.lineWidth = 3; cx.strokeStyle = warm(Math.min(al + 0.14, 0.7));
+      cx.stroke();
+    };
+    cx.lineCap = 'round';
+    if (a.type === 'daito') {
+      // 豪快斬り：前方180°の大なぎ払い。刃先に追従する帯だけを残し、面積で塗り潰さない
+      const sr = a.range, sweep = Math.PI;
+      const k = Math.min(pr / 0.55, 1); // 0.55で振り抜き、残りは余韻
+      const lead = a.face - sweep / 2 + sweep * k;
+      const tail = Math.min(sweep * 0.55, sweep * k);
+      band(a.x0, a.y0, sr * 0.52, sr, lead - tail, lead, 0.30 + 0.22 * fade); // 内側52%＝通常の三日月より太い帯＝豪快さ
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 10;
+      cx.beginPath();
+      cx.moveTo(a.x0 + Math.cos(lead) * 14, a.y0 + Math.sin(lead) * 14);
+      cx.lineTo(a.x0 + Math.cos(lead) * (sr - 6), a.y0 + Math.sin(lead) * (sr - 6));
+      cx.stroke();
+    } else if (a.type === 'yari') {
+      // 貫天の大突き：判定と同じ長さ・幅の一直線ライン（帯は薄く、芯だけ明るく）
+      const cos = Math.cos(a.face), sin = Math.sin(a.face);
+      const ext = a.len * Math.min(pr / 0.18, 1); // 0.18で一気に伸び切る
+      const ex = a.x0 + cos * ext, ey = a.y0 + sin * ext;
+      const g = cx.createLinearGradient(a.x0, a.y0, ex, ey);
+      g.addColorStop(0, warm(0.05 * fade));
+      g.addColorStop(0.25, warm(0.17 * fade));
+      g.addColorStop(0.9, warm(0.13 * fade));
+      g.addColorStop(1, 'rgba(255,244,206,0)');
+      cx.strokeStyle = g; cx.lineWidth = a.wide; // 判定幅ぶんの薄い帯（濃くすると貫いた敵が白飛びする）
+      cx.beginPath(); cx.moveTo(a.x0, a.y0); cx.lineTo(ex, ey); cx.stroke();
+      const nx = -sin, ny = cos;
+      for (const off of [0, -a.wide * 0.32, a.wide * 0.32]) { // 芯＋左右のスピードライン
+        const g2 = cx.createLinearGradient(a.x0, a.y0, ex, ey);
+        g2.addColorStop(0, 'rgba(255,240,190,0)');
+        g2.addColorStop(1, warm((off ? 0.40 : 0.70) * fade + 0.08));
+        cx.strokeStyle = g2; cx.lineWidth = off ? 1.6 : 3;
+        cx.beginPath();
+        cx.moveTo(a.x0 + nx * off, a.y0 + ny * off);
+        cx.lineTo(ex + nx * off, ey + ny * off);
+        cx.stroke();
+      }
+      const hl = Math.min(ext, 130) * (1 - pr * 0.5); // 櫂棒：突き出して引き戻す
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8;
+      cx.beginPath(); cx.moveTo(a.x0 + cos * 8, a.y0 + sin * 8); cx.lineTo(a.x0 + cos * hl, a.y0 + sin * hl); cx.stroke();
+    } else if (a.type === 'otsuchi') {
+      // 大地割り：全周の衝撃輪＋地割れの放射線。割れ目は暗色なので白抜けの心配がない
+      if (!a.cracks) {
+        a.cracks = [];
+        for (let i = 0; i < 10; i++) a.cracks.push({ ang: i / 10 * Math.PI * 2 + Math.random() * 0.3, wob: (Math.random() - 0.5) * 0.5 });
+      }
+      const R = a.range;
+      for (const c of a.cracks) {
+        const L = R * (0.3 + 0.7 * Math.min(pr / 0.5, 1)); // 割れ目は当たる範囲を超えない（見た目と判定を一致させる）
+        cx.strokeStyle = 'rgba(52,34,20,' + (0.55 * (1 - pr * 0.7)).toFixed(3) + ')';
+        cx.lineWidth = 5 * (1 - pr * 0.6);
+        cx.beginPath();
+        cx.moveTo(a.x0, a.y0);
+        cx.lineTo(a.x0 + Math.cos(c.ang) * L * 0.5, a.y0 + Math.sin(c.ang) * L * 0.5);
+        cx.lineTo(a.x0 + Math.cos(c.ang + c.wob) * L, a.y0 + Math.sin(c.ang + c.wob) * L);
+        cx.stroke();
+      }
+      for (const d of [0, 0.35]) { // 二重の衝撃輪（現行の着弾リングを全周へ拡張）
+        const k = (pr - d) / (1 - d);
+        if (k < 0 || k > 1) continue;
+        cx.globalAlpha = 1 - k;
+        cx.strokeStyle = 'rgba(255,246,214,0.8)'; cx.lineWidth = 4 - 2 * k;
+        cx.beginPath(); cx.arc(a.x0, a.y0, 18 + (R - 18) * k, 0, 7); cx.stroke();
+      }
+      cx.globalAlpha = 1;
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 9; // 叩きつけた櫂棒
+      cx.beginPath();
+      cx.moveTo(a.x0, a.y0);
+      cx.lineTo(a.x0 + Math.cos(a.face) * R * 0.55, a.y0 + Math.sin(a.face) * R * 0.55);
+      cx.stroke();
+    } else if (a.type === 'soken') {
+      // 疾風乱舞：ダッシュ軌跡＋刻んだ位置に残る×斬線
+      for (let i = 1; i < a.trail.length; i++) {
+        const q0 = a.trail[i - 1], q1 = a.trail[i];
+        const age = q1.t / Math.max(a.t, 0.001); // 新しいほど濃く太い
+        cx.strokeStyle = warm((0.08 + 0.24 * age) * (1 - pr * 0.5));
+        cx.lineWidth = 4 + 10 * age;
+        cx.beginPath(); cx.moveTo(q0.x, q0.y); cx.lineTo(q1.x, q1.y); cx.stroke();
+      }
+      for (const m of a.marks) {
+        const age = (a.t - m.born) / 0.26; // 0.18だと消えるのが早く「連続の×」に見えなかった
+        if (age > 1) continue;
+        const L = 26 + 10 * age;
+        cx.strokeStyle = warm((1 - age) * 0.62); cx.lineWidth = 3.5 - 1.5 * age;
+        for (const s of [0.7, -0.7]) {
+          const an = m.ang + s;
+          cx.beginPath();
+          cx.moveTo(m.x - Math.cos(an) * L, m.y - Math.sin(an) * L);
+          cx.lineTo(m.x + Math.cos(an) * L, m.y + Math.sin(an) * L);
+          cx.stroke();
+        }
+      }
+      const sp = a.face + pr * Math.PI * 4; // 2本の小太刀が交差しながら回る
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 5;
+      for (const s of [0, Math.PI]) {
+        cx.beginPath();
+        cx.moveTo(p.x + Math.cos(sp + s) * 8, p.y + Math.sin(sp + s) * 8);
+        cx.lineTo(p.x + Math.cos(sp + s) * a.radius * 0.78, p.y + Math.sin(sp + s) * a.radius * 0.78);
+        cx.stroke();
+      }
+    } else if (a.type === 'naginata') {
+      // 車輪大回転：全周×2回転を二重の弧で見せる。技はプレイヤーに追従する＝回りながら歩ける
+      const sr = a.range;
+      const ang = a.face + Math.PI * 2 * (F.turns || 2) * pr;
+      for (const s of [0, Math.PI]) band(p.x, p.y, sr * 0.66, sr, ang + s - 1.0, ang + s, s ? 0.22 : 0.38);
+      cx.strokeStyle = '#8a5a2b'; cx.lineWidth = 8;
+      cx.beginPath();
+      cx.moveTo(p.x - Math.cos(ang) * 18, p.y - Math.sin(ang) * 18);
+      cx.lineTo(p.x + Math.cos(ang) * (sr - 6), p.y + Math.sin(ang) * (sr - 6));
+      cx.stroke();
     }
   }
 
