@@ -55,8 +55,8 @@ import * as THREE from 'three';
 // 調整可能な定数（実験の本体。ここをいじって手触りを探る）
 // ---------------------------------------------------------------------
 const CAM = {
-  dist:      6.2,   // 背後距離（三國無双は「やや遠め・やや高め」）
-  height:    2.55,  // 注視点からのカメラ高さ
+  dist:      7.0,   // 背後距離（三國無双は「やや遠め・やや高め」）
+  height:    0.9,   // pitch とは別に足す高さ。低いと群がった雑兵に足元を埋められる
   lookY:     1.25,  // 注視点の高さ（プレイヤー足元から）
   lookAhead: 1.1,   // 注視点を進行方向へ押し出す量（走ると前が見える）
   posLag:    0.085, // 位置追従の遅れ（秒相当。大きいほどぬるっと遅れる）
@@ -64,8 +64,8 @@ const CAM = {
   fov:       62,    // 画角。無双系は広め（狭いと囲まれた画が見えない）
   sens:      0.0024,// マウス感度（rad/px）
   pitchMin: -0.30,  // 見下ろし/見上げの制限（＋が見下ろし）
-  pitchMax:  0.80,
-  pitchDef:  0.30,  // 初期の見下ろし角
+  pitchMax:  0.90,
+  pitchDef:  0.42,  // 初期の見下ろし角（0.30は雑兵に埋もれた）
   minDist:   1.5,   // 遮蔽で寄せるときの最短距離
   pullSpeed: 26,    // 遮蔽で寄せる速さ（戻りはゆっくり）
   backSpeed: 3.2,
@@ -80,11 +80,12 @@ const PLAYER = {
 };
 
 // 連舞：単発・単発・刻み・フィニッシュ。数値は2D版の比率を目安にした叩き台
+// arc=当たり判定の角度 ／ visArc=剣閃の見た目の角度（判定より広く描くのが無双の作法）
 const ATK = [
-  { dur:0.30, hit:0.11, arc:Math.PI/4,  range:2.3, kb:5,  shake:0.10, hitstop:0.045, trailY:1.35, tilt:0.55 },
-  { dur:0.30, hit:0.11, arc:Math.PI/4,  range:2.3, kb:5,  shake:0.10, hitstop:0.045, trailY:1.35, tilt:-0.55 },
-  { dur:0.34, hit:0.12, arc:0.61,       range:3.0, kb:6,  shake:0.13, hitstop:0.055, trailY:1.20, tilt:0.10, step:1.1 },
-  { dur:0.46, hit:0.16, arc:Math.PI,    range:3.6, kb:15, shake:0.34, hitstop:0.13,  trailY:1.05, tilt:0.0,
+  { dur:0.30, hit:0.11, arc:Math.PI/4, visArc:1.8, range:2.4, kb:5,  shake:0.10, hitstop:0.045, trailY:1.25, tilt:-0.70, dir:-1, alpha:0.85 },
+  { dur:0.30, hit:0.11, arc:Math.PI/4, visArc:1.8, range:2.4, kb:5,  shake:0.10, hitstop:0.045, trailY:1.25, tilt: 0.70, dir: 1, alpha:0.85 },
+  { dur:0.34, hit:0.12, arc:0.61,      visArc:1.1, range:3.0, kb:6,  shake:0.13, hitstop:0.055, trailY:1.15, tilt: 0.15, dir: 1, alpha:0.85, step:1.1 },
+  { dur:0.46, hit:0.16, arc:Math.PI,   visArc:Math.PI*1.05, range:3.6, kb:15, shake:0.34, hitstop:0.13, trailY:1.05, tilt:0.10, dir:-1, alpha:1.0,
     charge:0.12, finish:true }, // 豪快斬り：溜め0.12秒→前方180°の大なぎ払い
 ];
 const COMBO_WIN = 0.62; // この秒数以内に次を押すと連舞が継がる
@@ -426,11 +427,50 @@ resetMobs(wantMobs);
 // ---------------------------------------------------------------------
 // 剣閃（薙いだ弧）と斬痕。プール1本ずつで足りる
 // ---------------------------------------------------------------------
+// 剣閃：単色の扇だと「黄色い板」にしか見えないので、
+// 刃先が明るく尾に向かって消える帯（頂点カラーのアルファ）で作る
 const trailMat = new THREE.MeshBasicMaterial({
-  color:'#ffd27a', transparent:true, opacity:0.0, side:THREE.DoubleSide,
+  vertexColors:true, transparent:true, opacity:1, side:THREE.DoubleSide,
   blending:THREE.AdditiveBlending, depthWrite:false });
-const trail = new THREE.Mesh(new THREE.RingGeometry(1, 2, 24, 1, 0, 1), trailMat);
-trail.rotation.x = -Math.PI/2; trail.visible = false; scene.add(trail);
+const trail = new THREE.Mesh(new THREE.BufferGeometry(), trailMat);
+trail.rotation.x = -Math.PI/2; trail.visible = false;
+trail.frustumCulled = false; scene.add(trail);
+
+const _q1 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), -Math.PI/2);
+const _q2 = new THREE.Quaternion();
+const _ax = new THREE.Vector3();
+
+const TRAIL_SEG = 26;
+{ // 頂点数は固定。毎フレーム位置と色だけ書き換える
+  const g = trail.geometry;
+  const n = TRAIL_SEG + 1;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n*2*3), 3));
+  g.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(n*2*4), 4));
+  const idx = [];
+  for (let i=0;i<TRAIL_SEG;i++){
+    const a = i*2, b = a+1, c = a+2, d = a+3;
+    idx.push(a, b, d, a, d, c);
+  }
+  g.setIndex(idx);
+}
+// 刃先ほど明るく、尾ほど消える。内側は薄く（面で塗り潰すと敵が見えなくなる）
+function buildTrail(r0, r1, yawStart, sweep, alpha){
+  const pos = trail.geometry.attributes.position;
+  const col = trail.geometry.attributes.color;
+  const base = yawStart - Math.PI/2;
+  for (let i=0;i<=TRAIL_SEG;i++){
+    const t = i/TRAIL_SEG;                 // 0=尾 1=刃先
+    const f = Math.pow(t, 2.2);
+    const a = base + sweep*t;
+    const cs = Math.cos(a), sn = Math.sin(a);
+    pos.setXYZ(i*2,   r0*cs, r0*sn, 0);
+    pos.setXYZ(i*2+1, r1*cs, r1*sn, 0);
+    col.setXYZW(i*2,   1.00, 0.72, 0.30, f*alpha*0.30); // 内側＝金・薄く
+    col.setXYZW(i*2+1, 1.00, 0.92, 0.70, f*alpha);      // 外側（刃先）＝温白
+  }
+  pos.needsUpdate = true; col.needsUpdate = true;
+  trail.geometry.computeBoundingSphere();
+}
 
 const scarMat = new THREE.MeshBasicMaterial({ color:'#3a2a18', transparent:true, opacity:0, depthWrite:false });
 const scar = new THREE.Mesh(new THREE.RingGeometry(1, 2, 24, 1, 0, 1), scarMat);
@@ -440,7 +480,8 @@ let scarLife = 0;
 // 溜めの集光（足元の金の円）
 const chargeMat = new THREE.MeshBasicMaterial({ color:'#ffce6e', transparent:true, opacity:0,
   blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide });
-const chargeRing = new THREE.Mesh(new THREE.RingGeometry(0.5, 1.5, 32), chargeMat);
+// 塗り潰した円だと「黄色い水たまり」に見えるので、締まっていく細い輪にする
+const chargeRing = new THREE.Mesh(new THREE.RingGeometry(1.30, 1.52, 44), chargeMat);
 chargeRing.rotation.x = -Math.PI/2; chargeRing.position.y = 0.06; chargeRing.visible = false;
 scene.add(chargeRing);
 
@@ -747,40 +788,42 @@ function updateFx(dt){
       const q = a.t / a.charge;
       chargeRing.visible = true;
       chargeRing.position.set(P.x, 0.06, P.z);
-      chargeRing.scale.setScalar(1.35 - 0.45*q);
-      chargeMat.opacity = 0.18 + 0.40*q;
+      chargeRing.scale.setScalar(2.20 - 0.90*q);   // 予兆の輪が締まっていく
+      chargeMat.opacity = 0.30 + 0.55*q;
       trail.visible = false;
     } else {
-      chargeMat.opacity = Math.max(0, chargeMat.opacity - dt*4);
+      chargeMat.opacity = Math.max(0, chargeMat.opacity - dt*12); // 一閃に入ったら予兆は素早く消す
       const t0 = sp.charge || 0;
       const q = Math.min((a.t - t0) / (a.dur - t0), 1);
       const cutT = sp.finish ? 0.42 : 0.62;
       const k = Math.min(q/cutT, 1);
       const glow = q <= cutT ? 1 : Math.max(1 - (q-cutT)/(1-cutT), 0);
-      const sweep = Math.max(sp.arc * k, 0.02);
-      const start = a.face - sp.arc/2;
+      const va = sp.visArc || sp.arc;
+      const dir = sp.dir || 1;                 // 振る向き（腕のモーションと一致させる）
+      const sweep = dir * Math.max(va * k, 0.02);
+      const start = a.face - dir * va/2;
       trail.visible = true;
       trail.position.set(P.x, sp.trailY, P.z);
-      // 斜め斬りは弧を傾ける（真横の平面だけだと単調に見える）
-      trail.rotation.set(-Math.PI/2 + (sp.tilt || 0), 0, 0);
-      setArc(trail, sp.range*0.42, sp.range, start, sweep);
-      trailMat.opacity = (sp.finish ? 0.60 : 0.42) * glow;
+      // 弧の平面を「正面軸まわり」に倒す＝袈裟斬りの斜めの面になる（真水平だと薙ぎしか描けない）
+      _ax.set(Math.sin(a.face), 0, Math.cos(a.face));
+      _q2.setFromAxisAngle(_ax, sp.tilt || 0);
+      trail.quaternion.copy(_q2).multiply(_q1);
+      buildTrail(sp.range*0.52, sp.range*1.04, start, sweep, (sp.alpha || 0.5) * glow);
       if (sp.finish && k >= 1 && scarLife <= 0){
         // 斬痕：薙いだ弧に沿って地面に残る（見た目だけ）
-        setArc(scar, sp.range*0.5, sp.range*1.02, start, sp.arc);
+        setArc(scar, sp.range*0.84, sp.range*1.02, a.face - va/2, va); // 太いと影に見える
         scar.position.set(P.x, 0.035, P.z);
         scar.visible = true; scarLife = 1.6;
       }
     }
   } else {
-    trailMat.opacity = Math.max(0, trailMat.opacity - dt*5);
-    if (trailMat.opacity <= 0.001) trail.visible = false;
+    trail.visible = false;   // 剣閃は振りの最後で glow が0になるので、そのまま消してよい
     chargeMat.opacity = Math.max(0, chargeMat.opacity - dt*4);
     if (chargeMat.opacity <= 0.001) chargeRing.visible = false;
   }
   if (scarLife > 0){
     scarLife -= dt;
-    scarMat.opacity = Math.min(scarLife/1.6, 1) * 0.55;
+    scarMat.opacity = Math.min(scarLife/1.6, 1) * 0.38;
     if (scarLife <= 0) scar.visible = false;
   }
 }
@@ -840,10 +883,24 @@ function updateMobs(dt){
 const camPos  = new THREE.Vector3(0, 4, -12);
 const camAim  = new THREE.Vector3(0, 1.2, 0);
 const ray = new THREE.Raycaster();
-const _v = new THREE.Vector3(), _d = new THREE.Vector3();
+const _v = new THREE.Vector3(), _d = new THREE.Vector3(), _off = new THREE.Vector3();
 let curDist = CAM.dist;
 const fadedMats = new Set();
 const allFadeMats = () => [...kuraMats, ...baleMats, ...fenceMats];
+
+// 遮蔽物1つ（＝蔵なら壁も屋根も腰板も）のマテリアルをまとめて引く。
+// レイが当たったメッシュだけ薄くすると、屋根だけ残って「穴が空いた」画になる
+const occMats = new Map();
+for (const o of occluders){
+  const arr = [];
+  o.traverse(n => { if (n.isMesh && n.material) arr.push(n.material); });
+  occMats.set(o, arr);
+}
+function occRoot(obj){
+  let o = obj;
+  while (o && !occMats.has(o)) o = o.parent;
+  return o;
+}
 
 function restoreFade(){
   for (const m of allFadeMats()){ m.transparent = false; m.opacity = 1; m.depthWrite = true; }
@@ -858,12 +915,12 @@ function updateCamera(dt){
   _v.set(aimX, CAM.lookY, aimZ);
   camAim.lerp(_v, 1 - Math.exp(-dt/Math.max(CAM.aimLag, 0.001)));
 
-  // 望ましいカメラ位置（yaw/pitch の球面）
-  const dist = CAM.dist;
-  const hx = -Math.sin(yaw) * Math.cos(pitch);
-  const hz = -Math.cos(yaw) * Math.cos(pitch);
-  const hy =  Math.sin(pitch);
-  _d.set(hx, hy, hz).normalize();          // 注視点→カメラ の向き
+  // 望ましいカメラ位置＝ yaw/pitch の球面（距離 dist）＋ 追加の高さ height
+  _off.set(-Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch));
+  _off.multiplyScalar(CAM.dist);
+  _off.y += CAM.height;
+  const dist = _off.length();
+  _d.copy(_off).divideScalar(dist);        // 注視点→カメラ の向き
 
   // ---- 遮蔽判定：注視点からカメラ方向へレイを飛ばす ----
   ray.set(camAim, _d);
@@ -876,16 +933,18 @@ function updateCamera(dt){
     if (occlMode === 'pull'){
       want = Math.max(CAM.minDist, hits[0].distance - 0.35);
     } else {
-      // 半透明化：当たった物のマテリアルだけ薄くする
+      // 半透明化：遮っている「物」まるごとを薄くする
       const seen = new Set();
       for (const h of hits){
         if (h.distance > dist) break;
-        const mtl = h.object.material;
-        if (!mtl || seen.has(mtl)) continue;
-        seen.add(mtl);
-        mtl.transparent = true; mtl.depthWrite = false;
-        mtl.opacity = Math.max(0.22, mtl.opacity - dt*6);
-        fadedMats.add(mtl);
+        const root = occRoot(h.object);
+        if (!root || seen.has(root)) continue;
+        seen.add(root);
+        for (const mtl of occMats.get(root)){
+          mtl.transparent = true; mtl.depthWrite = false;
+          mtl.opacity = Math.max(0.20, mtl.opacity - dt*6);
+          fadedMats.add(mtl);
+        }
       }
     }
   }
@@ -989,7 +1048,9 @@ window.DBG = {
     const avg = a.reduce((s,v)=>s+v,0)/Math.max(a.length,1);
     const s = [...a].sort((x,y)=>y-x);
     return {
-      mobs: mobs.length, shadows: shadowsOn, occl: occlMode,
+      mobs: mobs.length, dead: mobs.filter(m=>m.dead>0).length,
+      step: P.atk ? P.step+1 : 0,
+      shadows: shadowsOn, occl: occlMode, dist:+curDist.toFixed(2),
       avgFps: +(1000/avg).toFixed(1),
       lowFps: +(1000/s[Math.floor(s.length*0.01)]).toFixed(1),
       minFps: +(1000/s[0]).toFixed(1),
