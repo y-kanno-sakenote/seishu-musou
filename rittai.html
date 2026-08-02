@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>清酒無双 3D実験（rittai）</title>
+<meta name="robots" content="noindex">
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0b0d10; overflow:hidden; }
+  canvas { display:block; }
+  /* デバッグ表示のみ。ゲームのHUDは今回のスコープ外 */
+  #dbg {
+    position:fixed; left:10px; top:10px; z-index:10;
+    font:12px/1.55 ui-monospace, Menlo, Consolas, monospace;
+    color:#e8e2d2; background:rgba(12,10,8,0.62); padding:8px 11px; border-radius:8px;
+    white-space:pre; pointer-events:none; letter-spacing:0.02em;
+  }
+  #help {
+    position:fixed; right:10px; top:10px; z-index:10; max-width:270px;
+    font:12px/1.7 ui-monospace, Menlo, Consolas, monospace;
+    color:#d9cfae; background:rgba(12,10,8,0.55); padding:8px 11px; border-radius:8px;
+    white-space:pre-wrap; pointer-events:none;
+  }
+  #lock {
+    position:fixed; inset:0; z-index:20; display:flex; align-items:center; justify-content:center;
+    background:rgba(8,6,5,0.55); color:#f0e6cc; cursor:pointer;
+    font:16px/1.9 system-ui, -apple-system, "Hiragino Sans", sans-serif; text-align:center;
+  }
+  #lock.off { display:none; }
+</style>
+</head>
+<body>
+<div id="dbg"></div>
+<div id="help">WASD 移動 ／ マウス カメラ旋回
+クリック or Space 攻撃（連舞）
+1:雑兵30体  2:100体
+L:影ON/OFF   T:遮蔽処理の切替
+R:雑兵リセット  P:一時停止</div>
+<div id="lock">クリックして開始<br><span style="font-size:13px;opacity:.75">（マウスでカメラを回します。Escで解除）</span></div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+
+<script type="module">
+// =====================================================================
+// 清酒無双 3D実験（rittai.html）
+//   目的：3D化の可否を判断するための最小実験。ゲームの移植ではない。
+//   見るのは「カメラ」と「手触り」だけ。発酵・ドロップ・UI等は一切作らない。
+//   キャラはモデルもリグも使わず、箱と円柱の親子関係＋手続きアニメで動かす。
+// =====================================================================
+import * as THREE from 'three';
+
+// ---------------------------------------------------------------------
+// 調整可能な定数（実験の本体。ここをいじって手触りを探る）
+// ---------------------------------------------------------------------
+const CAM = {
+  dist:      6.2,   // 背後距離（三國無双は「やや遠め・やや高め」）
+  height:    2.55,  // 注視点からのカメラ高さ
+  lookY:     1.25,  // 注視点の高さ（プレイヤー足元から）
+  lookAhead: 1.1,   // 注視点を進行方向へ押し出す量（走ると前が見える）
+  posLag:    0.085, // 位置追従の遅れ（秒相当。大きいほどぬるっと遅れる）
+  aimLag:    0.05,  // 注視点追従の遅れ
+  fov:       62,    // 画角。無双系は広め（狭いと囲まれた画が見えない）
+  sens:      0.0024,// マウス感度（rad/px）
+  pitchMin: -0.30,  // 見下ろし/見上げの制限（＋が見下ろし）
+  pitchMax:  0.80,
+  pitchDef:  0.30,  // 初期の見下ろし角
+  minDist:   1.5,   // 遮蔽で寄せるときの最短距離
+  pullSpeed: 26,    // 遮蔽で寄せる速さ（戻りはゆっくり）
+  backSpeed: 3.2,
+  shakeDecay: 6.5,  // 画面揺れの減衰
+};
+
+const PLAYER = {
+  speed:   6.2,   // 移動速度 m/s
+  accel:   26,    // 加速（無双は入力に対して機敏）
+  turn:    14,    // 向き追従の速さ
+  radius:  0.42,
+};
+
+// 連舞：単発・単発・刻み・フィニッシュ。数値は2D版の比率を目安にした叩き台
+const ATK = [
+  { dur:0.30, hit:0.11, arc:Math.PI/4,  range:2.3, kb:5,  shake:0.10, hitstop:0.045, trailY:1.35, tilt:0.55 },
+  { dur:0.30, hit:0.11, arc:Math.PI/4,  range:2.3, kb:5,  shake:0.10, hitstop:0.045, trailY:1.35, tilt:-0.55 },
+  { dur:0.34, hit:0.12, arc:0.61,       range:3.0, kb:6,  shake:0.13, hitstop:0.055, trailY:1.20, tilt:0.10, step:1.1 },
+  { dur:0.46, hit:0.16, arc:Math.PI,    range:3.6, kb:15, shake:0.34, hitstop:0.13,  trailY:1.05, tilt:0.0,
+    charge:0.12, finish:true }, // 豪快斬り：溜め0.12秒→前方180°の大なぎ払い
+];
+const COMBO_WIN = 0.62; // この秒数以内に次を押すと連舞が継がる
+
+const ENEMY = { speed:2.7, radius:0.42, sepR:0.95, sep:9.0 };
+
+const FIELD = { half: 30 };  // 里の広さ（一辺60m）
+
+// ---------------------------------------------------------------------
+// レンダラ・シーン
+// ---------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#9fb0b6');
+scene.fog = new THREE.Fog('#9fb0b6', 48, 130); // 近すぎると里の反対側が真っ白に霞む
+
+const camera = new THREE.PerspectiveCamera(CAM.fov, innerWidth/innerHeight, 0.1, 400);
+
+// 光：昼の斜光。影は判定材料なので必ず出す（Lキーで消せる）
+const hemi = new THREE.HemisphereLight('#cfe0e6', '#6b5a3e', 1.5);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight('#fff2d8', 2.0);
+sun.position.set(14, 22, 9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
+sun.shadow.camera.top = 26;   sun.shadow.camera.bottom = -26;
+sun.shadow.camera.near = 1;   sun.shadow.camera.far = 70;
+sun.shadow.bias = -0.0008;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+scene.add(sun.target);
+
+// ---------------------------------------------------------------------
+// 里（酒蔵の里）：土の地面・木塀・米俵の山・蔵
+//   2D版のトーン（TONE）から色だけ借りる。ロジックは持ってこない。
+// ---------------------------------------------------------------------
+const occluders = [];   // カメラ遮蔽の判定対象
+const blockers  = [];   // 移動をはばむ障害物 {type,x,z,r} / {type,x,z,hx,hz}
+
+// 地面
+{
+  const g = new THREE.PlaneGeometry(FIELD.half*2 + 8, FIELD.half*2 + 8, 1, 1);
+  const m = new THREE.MeshLambertMaterial({ color:'#9d8a66' });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.rotation.x = -Math.PI/2;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+}
+
+// 地面の模様（草むら・土のむら）：無地の平面だと走っても速度が感じられないので散らす。
+// 1メッシュのInstancedMeshで済ませる（描画コールを増やさない）
+{
+  const geo = new THREE.CircleGeometry(1, 7);
+  const m1 = new THREE.MeshLambertMaterial({ color:'#7b7852' });  // 草むら（緑を抑える＝雑兵と紛れない）
+  const m2 = new THREE.MeshLambertMaterial({ color:'#94815d' });  // 土のむら（差を付けすぎると斑に見える）
+  for (const [mm, n, s0, s1] of [[m1, 170, 0.4, 1.2], [m2, 110, 1.2, 2.8]]){
+    const inst = new THREE.InstancedMesh(geo, mm, n);
+    inst.receiveShadow = true;
+    const d = new THREE.Object3D();
+    for (let i=0;i<n;i++){
+      d.position.set((Math.random()-0.5)*FIELD.half*2, 0.012 + (mm===m2?0:0.004), (Math.random()-0.5)*FIELD.half*2);
+      d.rotation.set(-Math.PI/2, 0, Math.random()*6.28);
+      d.scale.setScalar(s0 + Math.random()*(s1-s0));
+      d.updateMatrix(); inst.setMatrixAt(i, d.matrix);
+    }
+    scene.add(inst);
+  }
+}
+
+// 木塀（外周4面）＋等間隔の柱。塀は個別マテリアルにして半透明化を面ごとに効かせる
+const fenceMats = [];
+{
+  const H = 2.2, T = 0.28, L = FIELD.half*2;
+  const postGeo = new THREE.BoxGeometry(0.34, H*1.16, 0.34);
+  const postMat = new THREE.MeshLambertMaterial({ color:'#4a3018' });
+  for (let i=0;i<4;i++){
+    const mat = new THREE.MeshLambertMaterial({ color:'#5a3d24' });
+    fenceMats.push(mat);
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(L, H, T), mat);
+    wall.position.y = H/2;
+    const a = i * Math.PI/2;
+    wall.position.x = Math.sin(a) * FIELD.half;
+    wall.position.z = Math.cos(a) * FIELD.half;
+    wall.rotation.y = a;
+    wall.castShadow = true; wall.receiveShadow = true;
+    scene.add(wall); occluders.push(wall);
+  }
+  for (let i=0;i<=L;i+=4){
+    for (const s of [-1,1]){
+      const p1 = new THREE.Mesh(postGeo, postMat);
+      p1.position.set(-FIELD.half + i, H*0.58, s*FIELD.half); p1.castShadow = true; scene.add(p1);
+      const p2 = new THREE.Mesh(postGeo, postMat);
+      p2.position.set(s*FIELD.half, H*0.58, -FIELD.half + i); p2.castShadow = true; scene.add(p2);
+    }
+  }
+}
+
+// 米俵の山（障害物）：俵＝横倒しの円柱を積む
+function baleStack(x, z){
+  const grp = new THREE.Group();
+  grp.position.set(x, 0, z);
+  const geo = new THREE.CylinderGeometry(0.42, 0.42, 1.15, 10);
+  const mat = new THREE.MeshLambertMaterial({ color:'#b6a077' });
+  const rows = [[-0.62,0,0.62],[-0.31,0.31],[0]];
+  rows.forEach((cols, ri) => {
+    cols.forEach(cx => {
+      const b = new THREE.Mesh(geo, mat);
+      b.rotation.z = Math.PI/2;
+      b.position.set(cx*1.02, 0.42 + ri*0.80, (ri%2?0.16:-0.10));
+      b.castShadow = true; b.receiveShadow = true;
+      grp.add(b);
+    });
+  });
+  scene.add(grp);
+  occluders.push(grp);
+  blockers.push({ type:'circle', x, z, r:1.35 });
+  return grp;
+}
+const baleMats = [];
+for (const [x,z] of [[8,6],[-9,4],[3,-11],[-6,-13],[14,-4],[-15,-3]]) {
+  const g = baleStack(x,z);
+  g.traverse(o => { if (o.isMesh) { o.material = o.material.clone(); baleMats.push(o.material); } });
+}
+
+// 蔵（1〜2棟）：白壁の箱＋腰板＋切妻屋根。カメラ遮蔽の主役
+const kuraMats = [];
+function kura(x, z, w, d, rot){
+  const grp = new THREE.Group();
+  grp.position.set(x, 0, z); grp.rotation.y = rot;
+  const h = 5.0;
+  const wallMat = new THREE.MeshLambertMaterial({ color:'#ddd6c4' });
+  const baseMat = new THREE.MeshLambertMaterial({ color:'#2e241c' });
+  const roofMat = new THREE.MeshLambertMaterial({ color:'#3b3f45' });
+  kuraMats.push(wallMat, baseMat, roofMat);
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
+  wall.position.y = h/2; wall.castShadow = true; wall.receiveShadow = true; grp.add(wall);
+  const base = new THREE.Mesh(new THREE.BoxGeometry(w*1.02, 1.1, d*1.02), baseMat);
+  base.position.y = 0.55; base.castShadow = true; grp.add(base);
+  // 切妻屋根＝細長い箱を2枚傾けて合わせる
+  for (const s of [-1,1]){
+    const r = new THREE.Mesh(new THREE.BoxGeometry(w*1.18, 0.26, d*0.66), roofMat);
+    r.position.set(0, h + 0.72, s * d*0.28);
+    r.rotation.x = s * 0.42;
+    r.castShadow = true; grp.add(r);
+  }
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(w*1.20, 0.30, 0.42), roofMat);
+  ridge.position.y = h + 1.28; ridge.castShadow = true; grp.add(ridge);
+  scene.add(grp);
+  occluders.push(grp);
+  // 当たり判定（回転は0/90度しか使わないので軸そろえのAABBで足りる）
+  const c = Math.abs(Math.cos(rot)), s = Math.abs(Math.sin(rot));
+  blockers.push({ type:'box', x, z, hx:(w*c + d*s)/2 + 0.1, hz:(w*s + d*c)/2 + 0.1 });
+  return grp;
+}
+kura(-13, 12, 11, 7, 0);
+kura(16, 13, 8, 6, Math.PI/2);
+
+// 蔵の敷地（土間色の板）：スケール感の手がかり
+{
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(34, 14),
+    new THREE.MeshLambertMaterial({ color:'#7d6a4c' }));
+  m.rotation.x = -Math.PI/2; m.position.set(1, 0.02, 12.5); m.receiveShadow = true;
+  scene.add(m);
+}
+
+// ---------------------------------------------------------------------
+// 蔵人（主人公）：箱と円柱の親子関係だけで組む。モデル・リグ・スキニングは使わない
+//   親子構造： root → body → upperBody → 肩/首 、body → 腰 → 脚
+// ---------------------------------------------------------------------
+const COL = {
+  happi:'#26324e',   // 藍の法被
+  happiDark:'#1a2338',
+  sleeve:'#33456b',  // 袖（胴より一段明るい藍＝腕の動きが読めるように）
+  skin:'#f0cfa8',
+  hair:'#181820',
+  band:'#c8323c',    // 紅の鉢巻
+  collar:'#e8e2d2',
+  pole:'#8a5a2b',    // 櫂棒
+  blade:'#c8a06a',
+};
+function mat(c, flat=true){ return new THREE.MeshLambertMaterial({ color:c, flatShading:flat }); }
+function box(w,h,d,c){ const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat(c)); m.castShadow = true; return m; }
+
+const player = new THREE.Group();
+scene.add(player);
+
+const body = new THREE.Group();      // 全体の上下動・呼吸
+body.position.y = 0.94;
+player.add(body);
+
+// --- 脚（上半身のひねりを受けない位置に置く）---
+function leg(sx){
+  const hip = new THREE.Group();
+  hip.position.set(sx*0.15, 0, 0);
+  const up = box(0.19, 0.44, 0.19, COL.happi); up.position.y = -0.22; hip.add(up);
+  const knee = new THREE.Group(); knee.position.y = -0.44; hip.add(knee);
+  const lo = box(0.165, 0.42, 0.165, COL.skin); lo.position.y = -0.21; knee.add(lo);
+  const foot = box(0.19, 0.10, 0.30, '#3a2a1c'); foot.position.set(0, -0.44, 0.05); knee.add(foot);
+  body.add(hip);
+  return { hip, knee };
+}
+const legL = leg(-1), legR = leg(1);
+
+// --- 上半身（ひねり＝rotation.y、前傾＝rotation.x）---
+const upper = new THREE.Group();
+body.add(upper);
+
+const torso = box(0.56, 0.66, 0.32, COL.happi); torso.position.y = 0.33; upper.add(torso);
+const skirt = box(0.60, 0.26, 0.36, COL.happiDark); skirt.position.y = 0.02; upper.add(skirt);
+{ // 襟の白いV（細い板を2枚）
+  for (const s of [-1,1]){
+    const c = box(0.07, 0.44, 0.03, COL.collar);
+    c.position.set(s*0.13, 0.46, 0.165);
+    c.rotation.z = s*0.30;
+    upper.add(c);
+  }
+}
+// 首と頭
+const neck = new THREE.Group(); neck.position.y = 0.70; upper.add(neck);
+{
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), mat(COL.skin, false));
+  head.position.y = 0.17; head.castShadow = true; neck.add(head);
+  // 髪は赤道までで止める（深く被せると目が隠れて「のっぺらぼう」に戻る）
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.202, 14, 10, 0, Math.PI*2, 0, Math.PI*0.50), mat(COL.hair, false));
+  hair.position.y = 0.17; hair.castShadow = true; neck.add(hair);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.185, 0.035, 8, 20), mat(COL.band, false));
+  band.position.y = 0.21; band.rotation.x = Math.PI/2; band.castShadow = true; neck.add(band);
+  // 鋭い目（これが無いと顔が「のっぺらぼう」で人に見えない）
+  for (const s of [-1,1]){
+    const eye = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.028, 0.03), mat('#141018', false));
+    eye.position.set(s*0.070, 0.118, 0.176);
+    eye.rotation.z = s*0.32;
+    neck.add(eye);
+  }
+}
+// 鉢巻のたなびき（2本・風になびく）
+const tails = [];
+for (const s of [0,1]){
+  const t = box(0.055 - s*0.012, 0.03, 0.52 + s*0.14, COL.band);
+  t.position.set(-0.05 + s*0.10, 0.21 - s*0.05, -0.30 - s*0.08);
+  neck.add(t); tails.push(t);
+}
+
+// --- 腕（肩→上腕→肘→前腕→手）---
+function arm(sx){
+  const sh = new THREE.Group();
+  sh.position.set(sx*0.35, 0.56, 0);
+  // 袖は胴より一段明るい藍（同色だと腕が胴に溶けて動きが読めなかった）
+  const up = box(0.16, 0.38, 0.16, COL.sleeve); up.position.y = -0.19; sh.add(up);
+  const el = new THREE.Group(); el.position.y = -0.36; sh.add(el);
+  const lo = box(0.13, 0.34, 0.13, COL.skin); lo.position.y = -0.17; el.add(lo);
+  const hand = new THREE.Group(); hand.position.y = -0.34; el.add(hand);
+  upper.add(sh);
+  return { sh, el, hand };
+}
+const armL = arm(-1), armR = arm(1);
+
+// --- 櫂棒（右手に持たせる）---
+//   握りは棒の下寄り。柄尻が後ろ上に出て、櫂の面が前下に来る「構え」の角度で持たせる。
+//   （前腕にまっすぐ沿わせると地面に突き刺さって見えたので基準角を付けた）
+const kaibou = new THREE.Group();
+{
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.05, 1.62, 8), mat(COL.pole, false));
+  shaft.position.y = -0.28;                 // 握り位置＝棒の下から1/3あたり
+  shaft.castShadow = true;
+  const blade = box(0.21, 0.44, 0.05, COL.blade);   // 櫂の面
+  blade.position.y = -1.05;
+  blade.castShadow = true;
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 8), mat('#4a3018', false));
+  kaibou.add(shaft, blade, grip);
+  kaibou.position.set(0.02, -0.16, 0.04);
+  // 前腕から少し前へ倒し、外へも開く。真下に沿わせると背後カメラから胴に隠れて武器が見えない
+  kaibou.rotation.set(-0.35, 0, 0.52);
+  armR.hand.add(kaibou);
+}
+
+// 影は落とすが受けない（プリミティブの面が汚れて見えるため）
+player.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+// ---------------------------------------------------------------------
+// 雑兵（菌）：プリミティブのみ。共有ジオメトリ／共有マテリアル
+// ---------------------------------------------------------------------
+const mobGeo  = new THREE.IcosahedronGeometry(0.40, 1);
+const mobMat  = new THREE.MeshLambertMaterial({ color:'#7c8a3e', flatShading:true });
+const eyeGeo  = new THREE.SphereGeometry(0.062, 8, 6);
+const eyeMat  = new THREE.MeshLambertMaterial({ color:'#1a1410' });
+const mobs = [];
+const mobPool = [];
+
+function makeMob(){
+  const g = new THREE.Group();
+  const b = new THREE.Mesh(mobGeo, mobMat); b.castShadow = true; g.add(b);
+  for (const s of [-1,1]){
+    const e = new THREE.Mesh(eyeGeo, eyeMat);
+    e.position.set(s*0.14, 0.10, 0.35);
+    g.add(e);
+  }
+  return { obj:g, mesh:b, x:0, z:0, vx:0, vz:0, ph:0, dead:0, spin:0, vy:0, yaw:0, hp:1 };
+}
+function spawnMob(x, z){
+  const m = mobPool.pop() || makeMob();
+  m.x = x; m.z = z; m.vx = 0; m.vz = 0; m.vy = 0; m.dead = 0; m.spin = 0; m.hp = 1;
+  m.ph = Math.random()*6.28; m.yaw = Math.random()*6.28;
+  m.obj.scale.setScalar(1);
+  m.obj.position.set(x, 0.42, z);
+  scene.add(m.obj);
+  mobs.push(m);
+}
+function killMob(i){
+  const m = mobs[i];
+  scene.remove(m.obj);
+  mobs.splice(i,1);
+  mobPool.push(m);
+}
+// 5体1組で寄ってくる（2D版の文法）。里の外周寄りに湧かせる
+let wantMobs = 30;
+function spawnGroup(){
+  const a = Math.random()*Math.PI*2;
+  const r = 14 + Math.random()*13;
+  const cx = Math.max(-FIELD.half+3, Math.min(FIELD.half-3, player.position.x + Math.cos(a)*r));
+  const cz = Math.max(-FIELD.half+3, Math.min(FIELD.half-3, player.position.z + Math.sin(a)*r));
+  for (let i=0;i<5;i++) spawnMob(cx + (Math.random()-0.5)*3.4, cz + (Math.random()-0.5)*3.4);
+}
+function resetMobs(n){
+  wantMobs = n;
+  while (mobs.length) killMob(0);
+  while (mobs.length < wantMobs) spawnGroup();
+}
+resetMobs(wantMobs);
+
+// ---------------------------------------------------------------------
+// 剣閃（薙いだ弧）と斬痕。プール1本ずつで足りる
+// ---------------------------------------------------------------------
+const trailMat = new THREE.MeshBasicMaterial({
+  color:'#ffd27a', transparent:true, opacity:0.0, side:THREE.DoubleSide,
+  blending:THREE.AdditiveBlending, depthWrite:false });
+const trail = new THREE.Mesh(new THREE.RingGeometry(1, 2, 24, 1, 0, 1), trailMat);
+trail.rotation.x = -Math.PI/2; trail.visible = false; scene.add(trail);
+
+const scarMat = new THREE.MeshBasicMaterial({ color:'#3a2a18', transparent:true, opacity:0, depthWrite:false });
+const scar = new THREE.Mesh(new THREE.RingGeometry(1, 2, 24, 1, 0, 1), scarMat);
+scar.rotation.x = -Math.PI/2; scar.position.y = 0.035; scar.visible = false; scene.add(scar);
+let scarLife = 0;
+
+// 溜めの集光（足元の金の円）
+const chargeMat = new THREE.MeshBasicMaterial({ color:'#ffce6e', transparent:true, opacity:0,
+  blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide });
+const chargeRing = new THREE.Mesh(new THREE.RingGeometry(0.5, 1.5, 32), chargeMat);
+chargeRing.rotation.x = -Math.PI/2; chargeRing.position.y = 0.06; chargeRing.visible = false;
+scene.add(chargeRing);
+
+// RingGeometry のローカル角 φ と ワールドの yaw ψ の対応： φ = ψ - π/2
+function setArc(mesh, r0, r1, yawStart, sweep){
+  mesh.geometry.dispose();
+  mesh.geometry = new THREE.RingGeometry(r0, r1, 30, 1, yawStart - Math.PI/2, sweep);
+}
+
+// ---------------------------------------------------------------------
+// 入力
+// ---------------------------------------------------------------------
+const keys = Object.create(null);
+let yaw = 0, pitch = CAM.pitchDef;
+let attackQueued = false, paused = false, shadowsOn = true;
+let occlMode = 'pull';   // 'pull'=カメラを手前に寄せる ／ 'fade'=遮蔽物を半透明化
+
+addEventListener('keydown', e => {
+  if (e.repeat) { e.preventDefault(); return; }
+  keys[e.code] = true;
+  if (e.code === 'Space') { attackQueued = true; e.preventDefault(); }
+  if (e.code === 'Digit1') resetMobs(30);
+  if (e.code === 'Digit2') resetMobs(100);
+  if (e.code === 'KeyR')   resetMobs(wantMobs);
+  if (e.code === 'KeyL')   { shadowsOn = !shadowsOn; sun.castShadow = shadowsOn; renderer.shadowMap.needsUpdate = true; }
+  if (e.code === 'KeyT')   { occlMode = occlMode === 'pull' ? 'fade' : 'pull'; restoreFade(); }
+  if (e.code === 'KeyP')   paused = !paused;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+const lockEl = document.getElementById('lock');
+lockEl.addEventListener('click', () => renderer.domElement.requestPointerLock());
+document.addEventListener('pointerlockchange', () => {
+  lockEl.classList.toggle('off', document.pointerLockElement === renderer.domElement);
+});
+addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== renderer.domElement) return;
+  yaw   -= e.movementX * CAM.sens;
+  pitch += e.movementY * CAM.sens;
+  pitch = Math.max(CAM.pitchMin, Math.min(CAM.pitchMax, pitch));
+});
+addEventListener('mousedown', e => {
+  if (document.pointerLockElement === renderer.domElement && e.button === 0) attackQueued = true;
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------------------------------------------------------------------
+// プレイヤー状態
+// ---------------------------------------------------------------------
+const P = {
+  x:0, z:-6, vx:0, vz:0, face:0,
+  atk:null, step:0, lastAtk:-99,
+  walkPhase:0, speed:0,
+};
+let hitstop = 0, shake = 0, tNow = 0;
+let atkBuf = -99;              // 先行入力の受付（無双は入力が繋がるのが命）
+const ATK_BUF = 0.26;
+
+function startAttack(){
+  const now = tNow;
+  P.step = (now - P.lastAtk <= COMBO_WIN) ? (P.step + 1) % 4 : 0;
+  P.lastAtk = now;
+  const a = ATK[P.step];
+  P.atk = { t:0, dur:a.dur, charge:a.charge || 0, hit:a.hit, done:false, spec:a, x0:P.x, z0:P.z, face:P.face };
+  if (a.finish) {
+    chargeRing.visible = true;
+  }
+}
+
+// 攻撃判定：前方 arc/2 以内・range 以内の雑兵を吹き飛ばす
+function resolveHit(a){
+  const half = a.arc/2;
+  let n = 0;
+  for (const m of mobs){
+    if (m.dead) continue;
+    const dx = m.x - P.x, dz = m.z - P.z;
+    const d = Math.hypot(dx, dz);
+    if (d > a.range + ENEMY.radius) continue;
+    let da = Math.atan2(dx, dz) - P.face;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    if (Math.abs(da) > half) continue;
+    const nx = d > 0.001 ? dx/d : Math.sin(P.face), nz = d > 0.001 ? dz/d : Math.cos(P.face);
+    m.dead = a.finish ? 1.5 : 0.75;        // 死に体として吹き飛ぶ秒数
+    m.vx = nx * a.kb; m.vz = nz * a.kb;
+    m.vy = a.finish ? 7.0 : 3.4;
+    m.spin = (Math.random()-0.5) * (a.finish ? 22 : 10);
+    n++;
+  }
+  if (n){ hitstop = a.hitstop; shake = Math.max(shake, a.shake); }
+  else  { shake = Math.max(shake, a.shake*0.35); }
+  return n;
+}
+
+// ---------------------------------------------------------------------
+// 障害物の押し出し（プレイヤー・雑兵で共用）
+// ---------------------------------------------------------------------
+function pushOut(p, r){
+  for (const b of blockers){
+    if (b.type === 'circle'){
+      const dx = p.x - b.x, dz = p.z - b.z, d = Math.hypot(dx,dz), min = b.r + r;
+      if (d < min && d > 0.0001){ p.x = b.x + dx/d*min; p.z = b.z + dz/d*min; }
+    } else {
+      const dx = p.x - b.x, dz = p.z - b.z;
+      const ox = b.hx + r - Math.abs(dx), oz = b.hz + r - Math.abs(dz);
+      if (ox > 0 && oz > 0){
+        if (ox < oz) p.x = b.x + Math.sign(dx || 1) * (b.hx + r);
+        else         p.z = b.z + Math.sign(dz || 1) * (b.hz + r);
+      }
+    }
+  }
+  const lim = FIELD.half - 1.4 - r;
+  p.x = Math.max(-lim, Math.min(lim, p.x));
+  p.z = Math.max(-lim, Math.min(lim, p.z));
+}
+
+// ---------------------------------------------------------------------
+// 更新：プレイヤー
+// ---------------------------------------------------------------------
+function updatePlayer(dt){
+  // 入力方向をカメラ基準に変換（無双はカメラ相対移動）
+  let ix = 0, iz = 0;
+  if (keys.KeyW) iz += 1;
+  if (keys.KeyS) iz -= 1;
+  if (keys.KeyA) ix -= 1;
+  if (keys.KeyD) ix += 1;
+  const len = Math.hypot(ix, iz);
+  let wx = 0, wz = 0;
+  if (len > 0){
+    ix /= len; iz /= len;
+    const s = Math.sin(yaw), c = Math.cos(yaw);
+    wx = ix*c + iz*s;
+    wz = -ix*s + iz*c;
+  }
+  // 攻撃中は移動を殺す（無双の「振ったら足が止まる」）
+  const canMove = !P.atk || P.atk.t > P.atk.dur * 0.8;
+  const tx = canMove ? wx*PLAYER.speed : 0, tz = canMove ? wz*PLAYER.speed : 0;
+  const k = 1 - Math.exp(-PLAYER.accel*dt);
+  P.vx += (tx - P.vx)*k; P.vz += (tz - P.vz)*k;
+  P.x += P.vx*dt; P.z += P.vz*dt;
+
+  // 3段目の踏み込み／フィニッシュの前進
+  if (P.atk){
+    const sp = P.atk.spec;
+    if (sp.step && P.atk.t < 0.10){
+      P.x += Math.sin(P.face) * sp.step * dt/0.10;
+      P.z += Math.cos(P.face) * sp.step * dt/0.10;
+    }
+  }
+  pushOut(P, PLAYER.radius);
+  P.speed = Math.hypot(P.vx, P.vz);
+
+  // 向き：移動中は進行方向へ、攻撃の出だしはカメラ方向へ吸い付かせる
+  let want = P.face;
+  if (len > 0) want = Math.atan2(wx, wz);
+  else if (P.atk && P.atk.t < 0.05) want = yaw;
+  if (P.atk && P.atk.t < 0.06 && len === 0) want = yaw;
+  let d = Math.atan2(Math.sin(want - P.face), Math.cos(want - P.face));
+  P.face += d * Math.min(1, PLAYER.turn*dt);
+  if (P.atk) P.atk.face = P.face;
+
+  player.position.set(P.x, 0, P.z);
+  player.rotation.y = P.face;
+
+  // 攻撃の進行
+  if (P.atk){
+    P.atk.t += dt;
+    const a = P.atk.spec;
+    if (!P.atk.done && P.atk.t >= P.atk.hit){ P.atk.done = true; resolveHit(a); }
+    if (P.atk.t >= P.atk.dur){
+      P.atk = null;
+      chargeRing.visible = false; chargeMat.opacity = 0;
+    }
+  }
+  // 先行入力の消化：振りの後半に入っていれば次段へ繋ぐ
+  if (tNow - atkBuf < ATK_BUF && (!P.atk || P.atk.t >= P.atk.dur*0.58)){
+    atkBuf = -99;
+    startAttack();
+  }
+}
+
+// ---------------------------------------------------------------------
+// 手続きアニメ：関節角度をコードで計算して回す（モーションデータなし）
+// ---------------------------------------------------------------------
+function poseCharacter(dt){
+  const t = tNow;
+  // --- 既定姿勢 ---
+  // 肩の rotation.z は「＋＝右へ振る」。左腕は −、右腕は ＋ が体の外側になる
+  let bodyY = 0.94, bodyLean = 0, twist = 0, tilt = 0;
+  let shLx = 0, shLz = -0.14, elL = -0.25;
+  let shRx = 0, shRz =  0.14, elR = -0.25;
+  let hipL = 0, hipR = 0, kneeL = 0, kneeR = 0;
+
+  const moving = P.speed > 0.3;
+  if (moving){
+    // 歩き／走り：腕脚の振り。速度で歩調が変わる
+    P.walkPhase += dt * (2.6 + P.speed*1.5);
+    const s = Math.sin(P.walkPhase), c = Math.cos(P.walkPhase);
+    const amp = Math.min(P.speed / PLAYER.speed, 1);
+    hipL =  s*0.72*amp; hipR = -s*0.72*amp;
+    kneeL = Math.max(0, -s)*0.9*amp; kneeR = Math.max(0, s)*0.9*amp;
+    shLx = -s*0.55*amp; shRx = s*0.55*amp;
+    elL = -0.35 - Math.max(0,s)*0.4;
+    elR = -0.80 - Math.max(0,-s)*0.3;   // 右肘は常に深く曲げる（伸ばすと櫂棒を引きずって見える）
+    bodyY += Math.abs(c)*0.055*amp;
+    bodyLean = 0.13*amp;
+    twist = -s*0.13*amp;
+  } else {
+    // 待機：呼吸と微かな重心移動
+    P.walkPhase += dt*1.2;
+    const b = Math.sin(t*1.9);
+    bodyY += b*0.012;
+    shLx = b*0.05; shRx = -b*0.05;
+    shLz = -0.18; shRz = 0.34;   // 櫂棒を持つ右腕は少し外へ開く（胴に隠れて武器が見えなくなる）
+    elL = -0.30; elR = -0.85;   // 右肘を深く曲げて櫂棒を前下がりに構えさせる
+    hipL = 0.05; hipR = -0.05;
+    twist = Math.sin(t*0.8)*0.05;
+  }
+
+  // --- 攻撃姿勢（上半身のみ上書き）---
+  if (P.atk){
+    const a = P.atk, sp = a.spec;
+    if (sp.finish){
+      // 豪快斬り：溜め（櫂棒を引き絞る）→ 前方180°の一閃
+      if (a.t < a.charge){
+        const q = a.t / a.charge;
+        twist    = 1.15 + 0.25*q;   // 薙ぎ出し側へ大きくひねる
+        bodyLean = -0.12*q;         // わずかに反る
+        shRx = -1.15 - 0.25*q; shRz = 0.55;   // 両腕とも右へ引き絞る
+        shLx = -0.95;          shLz = 0.50;
+        elR = -0.15; elL = -0.55;
+        hipL = 0.30; hipR = -0.30; kneeL = 0.35; kneeR = 0.35;
+        bodyY -= 0.09*q;            // 沈み込む
+      } else {
+        const q = Math.min((a.t - a.charge) / (a.dur - a.charge), 1);
+        const k = Math.min(q/0.42, 1);        // 0.42で180°を薙ぎ切る
+        const e = 1 - Math.pow(1-k, 2.6);     // 出だしが速い
+        twist    = 1.40 - 2.85*e;
+        bodyLean = 0.34*Math.sin(k*Math.PI) + 0.10;
+        shRx = -1.55; shRz =  0.45 - 0.65*e;   // 右→左へ振り抜く
+        shLx = -1.40; shLz =  0.30 - 0.55*e;
+        elR = -0.10; elL = -0.35;
+        hipL = -0.15; hipR = 0.20; kneeL = 0.28; kneeR = 0.20;
+        bodyY -= 0.13;
+      }
+    } else {
+      // 1〜3段：前方の単発の刻み。1段目は右上から、2段目は左上から、3段目は突き
+      const q = Math.min(a.t / a.dur, 1);
+      const wind = Math.min(q/0.30, 1);              // 振りかぶり
+      const cut  = q < 0.30 ? 0 : Math.min((q-0.30)/0.30, 1);
+      const e = 1 - Math.pow(1-cut, 2.4);
+      if (P.step === 2){
+        // 3段目＝踏み込み突き
+        const th = 1 - Math.pow(1 - Math.min(q/0.35,1), 3);
+        twist = -0.35 + 0.55*th;
+        bodyLean = 0.28*th;
+        shRx = -1.05 - 0.55*th; shRz =  0.16;
+        shLx = -0.85 - 0.45*th; shLz = -0.16;
+        elR = -0.55 + 0.5*th; elL = -0.7 + 0.5*th;
+        hipL = -0.35*th; hipR = 0.35*th;
+      } else {
+        const s = P.step === 0 ? 1 : -1;             // 右上→左下 ／ 左上→右下
+        twist    = s*(0.60*wind - 1.25*e);
+        tilt     = s*(0.22*wind - 0.42*e);
+        bodyLean = 0.10 + 0.20*e;
+        // 振りかぶりで外へ開き、斬り下ろしで体の前を横切る
+        shRx = -0.55 - 1.05*wind + 0.55*e;
+        shRz =  s*(0.35 + 0.65*wind - 1.65*e);
+        shLx = -0.35 - 0.55*wind + 0.30*e;
+        shLz =  s*(0.20 + 0.30*wind - 0.85*e);
+        elR = -0.40 - 0.35*wind + 0.55*e;
+        elL = -0.75;
+        hipL = 0.10*s; hipR = -0.10*s;
+      }
+    }
+  }
+
+  // --- 反映 ---
+  body.position.y = bodyY;
+  upper.rotation.set(bodyLean, twist, tilt);
+  armL.sh.rotation.set(shLx, 0, shLz); armL.el.rotation.x = elL;
+  armR.sh.rotation.set(shRx, 0, shRz); armR.el.rotation.x = elR;
+  legL.hip.rotation.x = hipL; legR.hip.rotation.x = hipR;
+  legL.knee.rotation.x = -kneeL; legR.knee.rotation.x = -kneeR;
+
+  // 鉢巻のたなびき（速度と時間で揺らす）
+  const w = Math.sin(t*7) * (0.18 + P.speed*0.05);
+  tails.forEach((tl, i) => {
+    tl.rotation.x = -0.25 - P.speed*0.06 + w*(0.5 + i*0.3);
+    tl.rotation.y = w*(1.1 - i*0.3);
+  });
+}
+
+// ---------------------------------------------------------------------
+// 剣閃・斬痕・溜めの見た目
+// ---------------------------------------------------------------------
+function updateFx(dt){
+  if (P.atk){
+    const a = P.atk, sp = a.spec;
+    if (sp.finish && a.t < a.charge){
+      // 溜め：足元に金の光が集まる
+      const q = a.t / a.charge;
+      chargeRing.visible = true;
+      chargeRing.position.set(P.x, 0.06, P.z);
+      chargeRing.scale.setScalar(1.35 - 0.45*q);
+      chargeMat.opacity = 0.18 + 0.40*q;
+      trail.visible = false;
+    } else {
+      chargeMat.opacity = Math.max(0, chargeMat.opacity - dt*4);
+      const t0 = sp.charge || 0;
+      const q = Math.min((a.t - t0) / (a.dur - t0), 1);
+      const cutT = sp.finish ? 0.42 : 0.62;
+      const k = Math.min(q/cutT, 1);
+      const glow = q <= cutT ? 1 : Math.max(1 - (q-cutT)/(1-cutT), 0);
+      const sweep = Math.max(sp.arc * k, 0.02);
+      const start = a.face - sp.arc/2;
+      trail.visible = true;
+      trail.position.set(P.x, sp.trailY, P.z);
+      // 斜め斬りは弧を傾ける（真横の平面だけだと単調に見える）
+      trail.rotation.set(-Math.PI/2 + (sp.tilt || 0), 0, 0);
+      setArc(trail, sp.range*0.42, sp.range, start, sweep);
+      trailMat.opacity = (sp.finish ? 0.60 : 0.42) * glow;
+      if (sp.finish && k >= 1 && scarLife <= 0){
+        // 斬痕：薙いだ弧に沿って地面に残る（見た目だけ）
+        setArc(scar, sp.range*0.5, sp.range*1.02, start, sp.arc);
+        scar.position.set(P.x, 0.035, P.z);
+        scar.visible = true; scarLife = 1.6;
+      }
+    }
+  } else {
+    trailMat.opacity = Math.max(0, trailMat.opacity - dt*5);
+    if (trailMat.opacity <= 0.001) trail.visible = false;
+    chargeMat.opacity = Math.max(0, chargeMat.opacity - dt*4);
+    if (chargeMat.opacity <= 0.001) chargeRing.visible = false;
+  }
+  if (scarLife > 0){
+    scarLife -= dt;
+    scarMat.opacity = Math.min(scarLife/1.6, 1) * 0.55;
+    if (scarLife <= 0) scar.visible = false;
+  }
+}
+
+// ---------------------------------------------------------------------
+// 更新：雑兵
+// ---------------------------------------------------------------------
+function updateMobs(dt){
+  for (let i = mobs.length - 1; i >= 0; i--){
+    const m = mobs[i];
+    if (m.dead > 0){
+      // 死に体：吹き飛んで回りながら落ち、縮んで消える
+      m.dead -= dt;
+      m.x += m.vx*dt; m.z += m.vz*dt;
+      m.obj.position.x = m.x; m.obj.position.z = m.z;
+      m.obj.position.y += m.vy*dt;
+      m.vy -= 17*dt;
+      m.vx *= 1 - 2.0*dt; m.vz *= 1 - 2.0*dt;
+      if (m.obj.position.y < 0.42){ m.obj.position.y = 0.42; m.vy *= -0.35; m.spin *= 0.6; }
+      m.obj.rotation.x += m.spin*dt; m.obj.rotation.z += m.spin*0.7*dt;
+      const s = Math.min(m.dead/0.35, 1);
+      m.obj.scale.setScalar(s);
+      if (m.dead <= 0){ killMob(i); continue; }
+      continue;
+    }
+    // プレイヤーへ寄る＋雑兵同士の押し合い（団子にならない程度の最小の分離）
+    const dx = P.x - m.x, dz = P.z - m.z;
+    const d = Math.hypot(dx, dz) || 1;
+    let ax = dx/d, az = dz/d;
+    if (d < 1.15){ ax = 0; az = 0; }
+    let sx = 0, sz = 0;
+    for (const o of mobs){
+      if (o === m || o.dead) continue;
+      const ox = m.x - o.x, oz = m.z - o.z;
+      const od = ox*ox + oz*oz;
+      if (od < ENEMY.sepR*ENEMY.sepR && od > 0.0001){
+        const inv = 1/Math.sqrt(od);
+        sx += ox*inv; sz += oz*inv;
+      }
+    }
+    m.vx = ax*ENEMY.speed + sx*ENEMY.sep*0.16;
+    m.vz = az*ENEMY.speed + sz*ENEMY.sep*0.16;
+    m.x += m.vx*dt; m.z += m.vz*dt;
+    pushOut(m, ENEMY.radius);
+    m.ph += dt*7;
+    const bob = Math.abs(Math.sin(m.ph))*0.13;
+    m.obj.position.set(m.x, 0.42 + bob, m.z);
+    m.obj.rotation.y = Math.atan2(dx, dz);
+    m.obj.scale.set(1 + bob*0.35, 1 - bob*0.35, 1 + bob*0.35); // ぷるぷる
+  }
+  while (mobs.length < wantMobs) spawnGroup();
+}
+
+// ---------------------------------------------------------------------
+// カメラ：背後追従＋遮蔽処理（本命）
+// ---------------------------------------------------------------------
+const camPos  = new THREE.Vector3(0, 4, -12);
+const camAim  = new THREE.Vector3(0, 1.2, 0);
+const ray = new THREE.Raycaster();
+const _v = new THREE.Vector3(), _d = new THREE.Vector3();
+let curDist = CAM.dist;
+const fadedMats = new Set();
+const allFadeMats = () => [...kuraMats, ...baleMats, ...fenceMats];
+
+function restoreFade(){
+  for (const m of allFadeMats()){ m.transparent = false; m.opacity = 1; m.depthWrite = true; }
+  fadedMats.clear();
+}
+let occlHitName = 'なし';
+
+function updateCamera(dt){
+  // 注視点：足元から lookY の高さ＋進行方向へ少し先出し
+  const aimX = P.x + P.vx*0.12*CAM.lookAhead;
+  const aimZ = P.z + P.vz*0.12*CAM.lookAhead;
+  _v.set(aimX, CAM.lookY, aimZ);
+  camAim.lerp(_v, 1 - Math.exp(-dt/Math.max(CAM.aimLag, 0.001)));
+
+  // 望ましいカメラ位置（yaw/pitch の球面）
+  const dist = CAM.dist;
+  const hx = -Math.sin(yaw) * Math.cos(pitch);
+  const hz = -Math.cos(yaw) * Math.cos(pitch);
+  const hy =  Math.sin(pitch);
+  _d.set(hx, hy, hz).normalize();          // 注視点→カメラ の向き
+
+  // ---- 遮蔽判定：注視点からカメラ方向へレイを飛ばす ----
+  ray.set(camAim, _d);
+  ray.far = dist + 0.4;
+  const hits = ray.intersectObjects(occluders, true);
+  occlHitName = 'なし';
+  let want = dist;
+  if (hits.length){
+    occlHitName = hits[0].object.name || hits[0].object.parent?.name || '構造物';
+    if (occlMode === 'pull'){
+      want = Math.max(CAM.minDist, hits[0].distance - 0.35);
+    } else {
+      // 半透明化：当たった物のマテリアルだけ薄くする
+      const seen = new Set();
+      for (const h of hits){
+        if (h.distance > dist) break;
+        const mtl = h.object.material;
+        if (!mtl || seen.has(mtl)) continue;
+        seen.add(mtl);
+        mtl.transparent = true; mtl.depthWrite = false;
+        mtl.opacity = Math.max(0.22, mtl.opacity - dt*6);
+        fadedMats.add(mtl);
+      }
+    }
+  }
+  if (occlMode === 'pull') restoreFadeSoft(dt);
+  else {
+    // 当たらなくなったものを戻す
+    for (const m of fadedMats){
+      if (m.opacity < 1){
+        m.opacity = Math.min(1, m.opacity + dt*2.2);
+        if (m.opacity >= 1){ m.transparent = false; m.depthWrite = true; fadedMats.delete(m); }
+      }
+    }
+  }
+  const sp = want < curDist ? CAM.pullSpeed : CAM.backSpeed;
+  curDist += (want - curDist) * Math.min(1, sp*dt);
+
+  _v.copy(camAim).addScaledVector(_d, curDist);
+  _v.y = Math.max(_v.y, 0.55);             // 地面にめり込ませない
+  camPos.lerp(_v, 1 - Math.exp(-dt/Math.max(CAM.posLag, 0.001)));
+
+  camera.position.copy(camPos);
+  camera.lookAt(camAim.x, camAim.y + 0.25, camAim.z);
+  if (shake > 0){
+    camera.position.x += (Math.random()-0.5)*shake;
+    camera.position.y += (Math.random()-0.5)*shake;
+    camera.rotation.z += (Math.random()-0.5)*shake*0.08;
+  }
+  // 影のカメラをプレイヤーに追従させる（広い里でも影が切れない）
+  sun.target.position.set(P.x, 0, P.z);
+  sun.position.set(P.x + 14, 22, P.z + 9);
+}
+function restoreFadeSoft(dt){
+  for (const m of fadedMats){
+    m.opacity = Math.min(1, m.opacity + dt*3);
+    if (m.opacity >= 1){ m.transparent = false; m.depthWrite = true; fadedMats.delete(m); }
+  }
+}
+
+// ---------------------------------------------------------------------
+// メインループ＋計測
+// ---------------------------------------------------------------------
+const dbg = document.getElementById('dbg');
+const times = [];                 // 直近のフレーム時間（ms）
+let last = performance.now(), acc = 0, dbgT = 0, fpsShown = 0;
+
+// 1フレーム分の世界の更新（描画は含まない）。ベンチからも同じ経路を回す
+function step(dt){
+  if (!paused){
+    if (hitstop > 0){ hitstop -= dt; dt *= 0.12; }  // ヒットストップ（手触りの核）
+    tNow += dt;
+    if (attackQueued){ attackQueued = false; atkBuf = tNow; }
+    updatePlayer(dt);
+    poseCharacter(dt);
+    updateMobs(dt);
+    updateFx(dt);
+    shake = Math.max(0, shake - shake*CAM.shakeDecay*dt - 0.001);
+  }
+  updateCamera(paused ? 0.016 : dt);
+}
+
+function loop(now){
+  requestAnimationFrame(loop);
+  let dt = (now - last)/1000; last = now;
+  times.push(dt*1000); if (times.length > 600) times.shift();
+  dt = Math.min(dt, 0.05);
+
+  step(dt);
+  renderer.render(scene, camera);
+
+  dbgT += dt;
+  if (dbgT > 0.25){
+    dbgT = 0;
+    fpsShown = fps(30);
+    const alive = mobs.reduce((s,m)=> s + (m.dead?0:1), 0);
+    dbg.textContent =
+      `fps ${fpsShown.toFixed(1)}   1%low ${lowFps().toFixed(1)}\n` +
+      `雑兵 ${mobs.length}（生 ${alive}）  影 ${shadowsOn?'ON':'OFF'}\n` +
+      `遮蔽 ${occlMode==='pull'?'カメラを寄せる':'半透明化'}  ${occlHitName}\n` +
+      `dist ${curDist.toFixed(2)} / ${CAM.dist}  pitch ${pitch.toFixed(2)}\n` +
+      `連舞 ${P.atk ? (P.step+1)+'段'+(P.atk.spec.finish?'（豪快斬り）':'') : '—'}\n` +
+      `draw ${renderer.info.render.calls}  tri ${(renderer.info.render.triangles/1000).toFixed(1)}k`;
+  }
+}
+function fps(n){
+  const a = times.slice(-n); if (!a.length) return 0;
+  return 1000 / (a.reduce((s,v)=>s+v,0)/a.length);
+}
+function lowFps(){
+  const a = times.slice(-300); if (a.length < 20) return 0;
+  const s = [...a].sort((x,y)=>y-x);
+  return 1000 / s[Math.floor(s.length*0.01)];
+}
+requestAnimationFrame(loop);
+
+// ---------------------------------------------------------------------
+// 計測・撮影用のデバッグ窓口（判断材料を取るためだけのもの）
+// ---------------------------------------------------------------------
+window.DBG = {
+  stat(){
+    const a = times.slice(-300);
+    const avg = a.reduce((s,v)=>s+v,0)/Math.max(a.length,1);
+    const s = [...a].sort((x,y)=>y-x);
+    return {
+      mobs: mobs.length, shadows: shadowsOn, occl: occlMode,
+      avgFps: +(1000/avg).toFixed(1),
+      lowFps: +(1000/s[Math.floor(s.length*0.01)]).toFixed(1),
+      minFps: +(1000/s[0]).toFixed(1),
+      calls: renderer.info.render.calls,
+      tris: renderer.info.render.triangles,
+      size: `${innerWidth}x${innerHeight}@${renderer.getPixelRatio()}`,
+    };
+  },
+  clear(){ times.length = 0; },
+  // 撮影用：rAFが絞られている環境でも指定フレーム数だけ進めて描く
+  tick(n = 1, dt = 1/60){ for (let i=0;i<n;i++){ step(dt); renderer.render(scene, camera); } return tNow; },
+  // 同期ベンチ：rAFに頼らず n フレーム分を回して1フレームの実コストを測る。
+  // （バックグラウンドのタブでは rAF が絞られて fps が測れないため）
+  bench(n = 180){
+    const gl = renderer.getContext();
+    const dt = 1/60;
+    // ウォームアップ
+    for (let i=0;i<20;i++){ step(dt); renderer.render(scene, camera); }
+    gl.finish();
+    const t0 = performance.now();
+    for (let i=0;i<n;i++){ step(dt); renderer.render(scene, camera); }
+    gl.finish();
+    const ms = (performance.now() - t0)/n;
+    return { frames:n, msPerFrame:+ms.toFixed(3), fps:+(1000/ms).toFixed(1),
+             mobs:mobs.length, shadows:shadowsOn,
+             calls:renderer.info.render.calls, tris:renderer.info.render.triangles,
+             size:`${innerWidth}x${innerHeight}@${renderer.getPixelRatio()}` };
+  },
+  mobs(n){ resetMobs(n); },
+  shadows(v){ shadowsOn = v; sun.castShadow = v; renderer.shadowMap.needsUpdate = true; },
+  occl(m){ occlMode = m; restoreFade(); },
+  pause(v){ paused = v; },
+  cam(o){ Object.assign(CAM, o); camera.fov = CAM.fov; camera.updateProjectionMatrix(); },
+  look(y, p){ yaw = y; pitch = p; },
+  warp(x, z){ P.x = x; P.z = z; P.vx = 0; P.vz = 0; player.position.set(x,0,z); camPos.set(x, 4, z-8); },
+  face(f){ P.face = f; player.rotation.y = f; },
+  attack(){ attackQueued = true; },
+  // 指定の段・指定の進行度でポーズを止める（スクショ用）
+  freeze(step, t){
+    paused = false;
+    P.step = step; P.lastAtk = tNow;
+    const a = ATK[step];
+    P.atk = { t:t, dur:a.dur, charge:a.charge||0, hit:a.hit, done:true, spec:a, x0:P.x, z0:P.z, face:P.face };
+    if (a.finish && t < a.charge) chargeRing.visible = true;
+    poseCharacter(0.016); updateFx(0.016);
+    paused = true;
+  },
+  walk(ph){ paused = false; P.speed = PLAYER.speed*0.9; P.walkPhase = ph; P.atk = null;
+            poseCharacter(0.001); paused = true; },
+  // 雑兵をプレイヤーの周りに輪で並べる（囲まれた画の撮影用）
+  ring(n, r){
+    while (mobs.length) killMob(0);
+    wantMobs = 0;
+    for (let i=0;i<n;i++){
+      const a = i/n*Math.PI*2, rr = r + (i%3)*0.9;
+      spawnMob(P.x + Math.cos(a)*rr, P.z + Math.sin(a)*rr);
+    }
+    wantMobs = n;
+    for (const m of mobs) m.obj.position.set(m.x, 0.42, m.z);
+  },
+  ver: THREE.REVISION,
+};
+console.log('[rittai] three r' + THREE.REVISION);
+</script>
+</body>
+</html>
