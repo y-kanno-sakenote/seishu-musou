@@ -138,7 +138,7 @@ function riceMainIs(name) { return !!(META.rice && META.rice.name === name); }
 // 純米＝被ダメ×0.95・糖化×0.9／本醸造系＝上槽ドロップ+1・純度🍶の上限-1（最低1）。数値の正は docs/sim_style_check.md
 const BREW = {
   junmai:  { label: '純米',   desc: '厚みで守る。糖化はゆっくり',       dmgTaken: 0.95, glucose: 0.90, dropBonus: 0, purityCap: 0 },
-  honjozo: { label: '本醸造', desc: '軽く搾って多く獲る。純度の上限-1', dmgTaken: 1,    glucose: 1,    dropBonus: 1, purityCap: -1 },
+  honjozo: { label: '本醸造', desc: '上槽の酒米+1。純度上限-1', dmgTaken: 1,    glucose: 1,    dropBonus: 1, purityCap: -1 },
 };
 const BREW_DEFAULT = 'honjozo'; // 新しくドロップする酒米の既定
 function styleOf(r) { return r && BREW[r.style] ? r.style : null; } // null＝未指定（styleを持たない旧セーブ＝従来挙動のまま）
