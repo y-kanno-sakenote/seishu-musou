@@ -6,8 +6,9 @@
 - 精米歩合   = 武器強化。%を下げるほど攻撃力倍率が上がる
 - 酒米       = 防具。固定メインスキル＋ランダムサブスキル
 - 酵母       = ブドウ糖を消費する固有チャージ技
-- 火落ち菌   = 呂布枠。ボス戦終盤に乱入し、倒すまでボス（蔵の制圧）に手を出せない
-- 上槽       = クリア時の防具ドロップ判定。特定名称（純米/吟醸/大吟醸）がレア度
+- 火落ち菌   = 呂布枠。醪を搾った瞬間、できた酒に火落ち菌が湧く。殺菌するまで蔵は制圧できない
+               （火落ちは上槽後の清酒で起こる腐敗現象。出典: 酒造講本 p.16）
+- 上槽       = クリア時の防具ドロップ判定。レア度＝精米歩合の一軸（普通酒/本醸造/吟醸/大吟醸）
 
 数値はすべて叩き台。このファイルで大量ロールして確定させ、確定値だけJS（手触り層）へ移植する。
 """
@@ -37,10 +38,12 @@ class Style(Enum):
 
 
 class Rarity(Enum):
-    REGULAR = 0    # サブスキル0枠
-    JUNMAI = 1     # 1-2枠
-    GINJO = 2      # 2-3枠
-    DAIGINJO = 3   # 4枠確定（テーブル4種で原案どおり）
+    """レア度＝精米歩合の一軸。原料軸（純米か否か）はここに混ぜない。
+    本醸造=70%以下 / 吟醸=60%以下 / 大吟醸=50%以下（出典: 日本酒の基 3.表示 p.9）"""
+    REGULAR = 0    # 普通酒: サブスキル0枠
+    HONJOZO = 1    # 本醸造（70%以下）: 1-2枠
+    GINJO = 2      # 吟醸（60%以下）: 2-3枠
+    DAIGINJO = 3   # 大吟醸（50%以下）: 4枠確定（テーブル4種で原案どおり）
 
 
 # サブスキル（2026-07-19に4種へ拡張。原案テーブル完備）
@@ -92,7 +95,7 @@ class Rice:
 
 @dataclass
 class Yeast:
-    name: str  # きょうかい6号/7号/9号
+    name: str  # きょうかい14号/7号/9号
     cost_glucose: int = 100
     power: float = 0.0  # 0なら既定倍率（7号=5.0 / 9号=10.0）
 
@@ -159,7 +162,7 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
     hiochi = None  # 乱入後はHP値
     hiochi_done = False
     minions = tn.minion_cap
-    freeze = 0    # 6号: 敵全体行動不能tick
+    freeze = 0    # 14号: 敵全体行動不能tick
     stun = 0      # 9号: 主目標スタンtick
     ferments = 0
     hio_start = hio_ticks = 0
@@ -187,7 +190,7 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
         if glucose >= yeast.cost_glucose:
             glucose -= yeast.cost_glucose
             ferments += 1
-            if yeast.name == "きょうかい6号":
+            if yeast.name == "きょうかい14号":
                 freeze = 3  # 敵全体3秒凍結
             elif yeast.name == "きょうかい7号":
                 burst = atk * (yeast.power or 5.0) * yeast_mult  # 全体500%
@@ -204,14 +207,16 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
                     boss -= burst
                 stun = 2
 
-        # --- 火落ち菌乱入（呂布枠）：倒すまで上槽（クリア）不可 ---
+        # --- 火落ち菌乱入（呂布枠）：醪を搾った瞬間、できた酒に火落ち菌が湧く ---
+        # 殺菌（火入れ）するまで蔵は制圧できない。ボス残HPは「上槽の瞬間」の合図として使う
+        # （火落ちは上槽後の清酒で起こる。出典: 酒造講本 p.16。閾値・HP・再生は変更しない）
         if not hiochi_done and hiochi is None and boss <= tn.boss_hp * tn.hiochi_at:
             hiochi = tn.hiochi_hp
             boss = max(boss, 1.0)  # 一撃で閾値を飛び越えても乱入はスキップできない
             hio_start = t
         if hiochi is not None and hiochi <= 0:
             hiochi = None
-            hiochi_done = True  # 殺菌完了。ボスへの攻撃が解禁される
+            hiochi_done = True  # 火入れ（低温殺菌）完了。ここで蔵の制圧が成立する
             hio_ticks = t - hio_start
         if hiochi is None and boss <= 0:
             return Result(True, t, hp, ferments, "", hio_ticks)
@@ -246,12 +251,12 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
 
 class JosoSystem:
     RARITY_TABLE = {
-        Difficulty.EASY:      [(Rarity.REGULAR, 0.60), (Rarity.JUNMAI, 0.30), (Rarity.GINJO, 0.09), (Rarity.DAIGINJO, 0.01)],
-        Difficulty.NORMAL:    [(Rarity.REGULAR, 0.35), (Rarity.JUNMAI, 0.40), (Rarity.GINJO, 0.20), (Rarity.DAIGINJO, 0.05)],
-        Difficulty.HARD:      [(Rarity.REGULAR, 0.10), (Rarity.JUNMAI, 0.35), (Rarity.GINJO, 0.40), (Rarity.DAIGINJO, 0.15)],
+        Difficulty.EASY:      [(Rarity.REGULAR, 0.60), (Rarity.HONJOZO, 0.30), (Rarity.GINJO, 0.09), (Rarity.DAIGINJO, 0.01)],
+        Difficulty.NORMAL:    [(Rarity.REGULAR, 0.35), (Rarity.HONJOZO, 0.40), (Rarity.GINJO, 0.20), (Rarity.DAIGINJO, 0.05)],
+        Difficulty.HARD:      [(Rarity.REGULAR, 0.10), (Rarity.HONJOZO, 0.35), (Rarity.GINJO, 0.40), (Rarity.DAIGINJO, 0.15)],
         Difficulty.NIGHTMARE: [(Rarity.DAIGINJO, 1.00)],  # 大吟醸確定
     }
-    SLOT_COUNT = {Rarity.REGULAR: (0, 0), Rarity.JUNMAI: (1, 2), Rarity.GINJO: (2, 3), Rarity.DAIGINJO: (4, 4)}
+    SLOT_COUNT = {Rarity.REGULAR: (0, 0), Rarity.HONJOZO: (1, 2), Rarity.GINJO: (2, 3), Rarity.DAIGINJO: (4, 4)}
 
     @classmethod
     def drop(cls, difficulty: Difficulty, rng: random.Random) -> Rice:
@@ -267,7 +272,7 @@ class JosoSystem:
         n = min(rng.randint(lo, hi), len(SUB_SKILLS))  # 重複なし・初版はテーブル2種が上限
         subs = rng.sample(SUB_SKILLS, n)
         name = rng.choice(["山田錦の魂", "五百万石の魂"])
-        prefix = {Rarity.REGULAR: "", Rarity.JUNMAI: "純米・", Rarity.GINJO: "吟醸・", Rarity.DAIGINJO: "大吟醸・"}[rarity]
+        prefix = {Rarity.REGULAR: "", Rarity.HONJOZO: "本醸造・", Rarity.GINJO: "吟醸・", Rarity.DAIGINJO: "大吟醸・"}[rarity]
         return Rice(name=prefix + name, rarity=rarity, sub_skills=subs)
 
 
@@ -279,7 +284,8 @@ def pct(x):
 
 # 数値確定候補（2026-07-19。実験1b/1cの結果）
 TUNED_YEASTS = [
-    Yeast("きょうかい6号", cost_glucose=80),   # 全体3秒凍結。コスト割引が持ち味
+    Yeast("きょうかい14号", cost_glucose=80),  # 全体3秒凍結。コスト割引が持ち味
+    # 14号=金沢酵母。低温でも発酵力が強い＝凍結・生存特化の写像（出典: 日本酒の基 p.32）
     Yeast("きょうかい7号", power=6.0),         # 全体600%（原案500%から増）
     Yeast("きょうかい9号", power=5.0),         # 単体500%防御無視+スタン（原案1000%から半減）
 ]
@@ -315,13 +321,13 @@ def main():
         tn = Tuning(glucose_rate=rate)
         run_matrix(f"実験1: 糖チャージ率={int(rate*100)}%", tn, 500, rng)
 
-    # 実験1b: 6号のコスト調整（凍結の持ち味はコスト割引で出るか）
-    print("\n=== 実験1b: きょうかい6号のコスト（精米50%・各1000回）===")
+    # 実験1b: 14号のコスト調整（凍結の持ち味はコスト割引で出るか）
+    print("\n=== 実験1b: きょうかい14号のコスト（精米50%・各1000回）===")
     tn = Tuning(glucose_rate=0.02)
     for cost in (100, 80, 60):
         wins = ticks = 0
         for _ in range(1000):
-            r = simulate_battle(Weapon(polishing_rate=50), Rice(), Yeast("きょうかい6号", cost_glucose=cost), tn, rng)
+            r = simulate_battle(Weapon(polishing_rate=50), Rice(), Yeast("きょうかい14号", cost_glucose=cost), tn, rng)
             wins += r.win
             ticks += r.ticks
         print(f"  コスト{cost:>3} 勝率{pct(wins/1000)} 平均{ticks/1000:5.1f}t")
@@ -330,7 +336,7 @@ def main():
     print("\n=== 実験1c: 酵母バランス調整（精米50%・各1000回）===")
     tn = Tuning(glucose_rate=0.02)
     candidates = [
-        Yeast("きょうかい6号", cost_glucose=80),
+        Yeast("きょうかい14号", cost_glucose=80),
         Yeast("きょうかい7号", power=6.0),
         Yeast("きょうかい9号", power=10.0),
         Yeast("きょうかい9号", power=8.0),
