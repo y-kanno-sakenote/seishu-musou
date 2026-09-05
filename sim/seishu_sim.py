@@ -13,6 +13,7 @@
 数値はすべて叩き台。このファイルで大量ロールして確定させ、確定値だけJS（手触り層）へ移植する。
 """
 import random
+import sys
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
@@ -44,6 +45,22 @@ class Rarity(Enum):
     HONJOZO = 1    # 本醸造（70%以下）: 1-2枠
     GINJO = 2      # 吟醸（60%以下）: 2-3枠
     DAIGINJO = 3   # 大吟醸（50%以下）: 4枠確定（テーブル4種で原案どおり）
+
+
+class BrewStyle(Enum):
+    """仕込み方＝原料軸。レア度（精米歩合の一軸）とは直交する別軸。
+    純米＝米・米こうじ・水のみ / 本醸造系＝醸造アルコールを白米重量の10%以下で添加
+    （清酒の製法品質表示基準・国税庁告示第8号）。格は横並びで、どちらにも利と害を置く。
+    None（未指定）＝2026-09-06以前の挙動（効果なし・従来の名前）＝後方互換。"""
+    JUNMAI = auto()   # 純米: 被ダメ-5% / 糖化-10%
+    HONJOZO = auto()  # 本醸造系: 上槽ドロップ数+1 / 純度上限-1（simは純度を持たないため未実装・注記のみ）
+
+
+# 仕込み方の効果（2026-09-06 叩き台）
+JUNMAI_DMG_TAKEN = 0.95    # 純米: 被ダメ-5%（コク＝厚みの写像）※叩き台は-10%。実測で-5%に下げた（docs/sim_style_check.md）
+JUNMAI_GLUCOSE = 0.90      # 純米: 糖化-10%
+HONJOZO_DROP_BONUS = 1     # 本醸造系: 上槽ドロップ数+1（アル添で粕歩合が下がる写像）
+HONJOZO_PURITY_CAP = -1    # 本醸造系: 純度🍶の上限-1 ※simは純度を持たないため未実装（手触り層で実装する）
 
 
 # サブスキル（2026-07-19に4種へ拡張。原案テーブル完備）
@@ -83,6 +100,7 @@ class Rice:
     defense: int = 40
     rarity: Rarity = Rarity.REGULAR
     sub_skills: list = field(default_factory=list)
+    style: BrewStyle = None  # 仕込み方。蔵に入る時点で固定。None=未指定（従来挙動）
 
     @property
     def main_skill(self):
@@ -147,7 +165,10 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
     sweep = int(tn.sweep_targets * (1.5 if weapon.style == Style.BOX else 1.0))
     yeast_mult = 1.30 if rice.has("YEAST_DAMAGE_UP") else 1.0
     boss_mult = 1.50 if rice.has("VS_BOSS_DAMAGE_UP") else 1.0  # 火入れの極意：ボス・火落ち菌のみ
-    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0)
+    # 仕込み方（純米=被ダメ-5%・糖化-10% / 本醸造系=戦闘中の効果なし。利は上槽ドロップ数+1）
+    style_glucose = JUNMAI_GLUCOSE if rice.style == BrewStyle.JUNMAI else 1.0
+    style_dmg_taken = JUNMAI_DMG_TAKEN if rice.style == BrewStyle.JUNMAI else 1.0
+    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0) * style_glucose
     incoming_cut = 0.20 if weapon.koji == Koji.WHITE else 0.0
 
     def vs_def(dmg, df, ignore=False):
@@ -236,6 +257,7 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
                 raw -= tn.hiochi_dmg if hiochi is not None else tn.boss_dmg
             dmg = raw * rng.uniform(0.7, 1.3) * (1.0 - tn.avoid) * (1.0 - incoming_cut)
             dmg *= 100.0 / (100.0 + rice.defense)
+            dmg *= style_dmg_taken
             hp -= dmg
             if hp <= 0:
                 phase = "hiochi" if hiochi is not None else "boss"
@@ -258,8 +280,26 @@ class JosoSystem:
     }
     SLOT_COUNT = {Rarity.REGULAR: (0, 0), Rarity.HONJOZO: (1, 2), Rarity.GINJO: (2, 3), Rarity.DAIGINJO: (4, 4)}
 
+    # 名前の合成規則（2026-09-06）: 原料軸×精米歩合軸の直交2軸をそのまま名前にする
+    # 純米: 普通酒段階は「純米」を付けない（純米は精米歩合の規定を持たないため）／本醸造段階=特別純米
+    PREFIX = {
+        None: {Rarity.REGULAR: "", Rarity.HONJOZO: "本醸造・", Rarity.GINJO: "吟醸・", Rarity.DAIGINJO: "大吟醸・"},
+        BrewStyle.HONJOZO: {Rarity.REGULAR: "", Rarity.HONJOZO: "本醸造・", Rarity.GINJO: "吟醸・", Rarity.DAIGINJO: "大吟醸・"},
+        BrewStyle.JUNMAI: {Rarity.REGULAR: "", Rarity.HONJOZO: "特別純米・", Rarity.GINJO: "純米吟醸・", Rarity.DAIGINJO: "純米大吟醸・"},
+    }
+
     @classmethod
-    def drop(cls, difficulty: Difficulty, rng: random.Random) -> Rice:
+    def drop_count(cls, style: BrewStyle = None) -> int:
+        """1回の上槽で落ちる酒米の数。本醸造系は粕歩合が下がる写像で+1。"""
+        return 1 + (HONJOZO_DROP_BONUS if style == BrewStyle.HONJOZO else 0)
+
+    @classmethod
+    def drop_all(cls, difficulty: Difficulty, rng: random.Random, style: BrewStyle = None) -> list:
+        """上槽1回ぶんのドロップ全部。style未指定なら1個＝従来と同じ乱数消費。"""
+        return [cls.drop(difficulty, rng, style) for _ in range(cls.drop_count(style))]
+
+    @classmethod
+    def drop(cls, difficulty: Difficulty, rng: random.Random, style: BrewStyle = None) -> Rice:
         r = rng.random()
         acc = 0.0
         rarity = Rarity.REGULAR
@@ -272,8 +312,8 @@ class JosoSystem:
         n = min(rng.randint(lo, hi), len(SUB_SKILLS))  # 重複なし・初版はテーブル2種が上限
         subs = rng.sample(SUB_SKILLS, n)
         name = rng.choice(["山田錦の魂", "五百万石の魂"])
-        prefix = {Rarity.REGULAR: "", Rarity.HONJOZO: "本醸造・", Rarity.GINJO: "吟醸・", Rarity.DAIGINJO: "大吟醸・"}[rarity]
-        return Rice(name=prefix + name, rarity=rarity, sub_skills=subs)
+        prefix = cls.PREFIX[style][rarity]
+        return Rice(name=prefix + name, rarity=rarity, sub_skills=subs, style=style)
 
 
 # ---------------- 実験 ----------------
@@ -291,7 +331,7 @@ TUNED_YEASTS = [
 ]
 
 
-def run_matrix(label: str, tn: Tuning, n: int, rng: random.Random):
+def run_matrix(label: str, tn: Tuning, n: int, rng: random.Random, style: BrewStyle = None):
     print(f"\n=== {label}（各{n}回 / 勝率・平均tick・平均発酵回数）===")
     print(f"{'酵母':<10}", end="")
     for pol in (70, 50, 35):
@@ -303,7 +343,7 @@ def run_matrix(label: str, tn: Tuning, n: int, rng: random.Random):
             wins = ticks = fers = 0
             for _ in range(n):
                 w = Weapon(polishing_rate=pol)
-                r = simulate_battle(w, Rice(), yeast, tn, rng)
+                r = simulate_battle(w, Rice(style=style), yeast, tn, rng)
                 wins += r.win
                 ticks += r.ticks
                 fers += r.ferments
@@ -395,5 +435,35 @@ def main():
         w.polish()
 
 
+# ---------------- 仕込み方の実測（2026-09-06 追加。既定経路には出さない）----------------
+
+def main_style():
+    """`python3 sim/seishu_sim.py --style` で実行。既定経路（引数なし）の出力は一切変えない。
+    公平に比べるため仕込み方ごとに同一seedの乱数を張り直す。"""
+    print("【仕込み方（純米／本醸造系）の実測】数値は叩き台。両者の勝率差を読む。")
+    for style, label in ((BrewStyle.JUNMAI, "純米"), (BrewStyle.HONJOZO, "本醸造系")):
+        for rate in (0.10, 0.02):
+            rng = random.Random(20260906)
+            run_matrix(f"仕込み方={label} / 糖チャージ率={int(rate * 100)}%",
+                       Tuning(glucose_rate=rate), 500, rng, style=style)
+
+    print("\n=== 上槽ドロップ数（1回の上槽で落ちる酒米の数・各2000回）===")
+    for style, label in ((BrewStyle.JUNMAI, "純米"), (BrewStyle.HONJOZO, "本醸造系")):
+        rng = random.Random(20260906)
+        for diff in Difficulty:
+            drops = [len(JosoSystem.drop_all(diff, rng, style)) for _ in range(2000)]
+            print(f"  {label:<5} {diff.name:<10} 平均ドロップ数 {sum(drops) / len(drops):.2f}")
+
+    print("\n=== 上槽の名前（合成規則の確認）===")
+    for style, label in ((BrewStyle.JUNMAI, "純米"), (BrewStyle.HONJOZO, "本醸造系"), (None, "未指定")):
+        names = [JosoSystem.PREFIX[style][ra] + "山田錦の魂" for ra in Rarity]
+        print(f"  {label:<5} " + " / ".join(names))
+
+    print("\n※純度🍶の上限-1（本醸造系のデメリット）はsimに純度の概念が無いため未実装。手触り層で実装する")
+
+
 if __name__ == "__main__":
-    main()
+    if "--style" in sys.argv:
+        main_style()
+    else:
+        main()
