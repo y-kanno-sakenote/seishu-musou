@@ -132,15 +132,34 @@ const RICE_MAINS = {
 };
 const RICE_NAMES = Object.keys(RICE_MAINS);
 function riceMainIs(name) { return !!(META.rice && META.rice.name === name); }
+
+// 仕込み方（純米／本醸造系）＝酒米の原料軸。レア度（精米歩合の一軸）と直交する別軸。
+// 蔵に入る時点で固定（装備画面でだけ切り替えられる。戦闘中は装備画面に入れない）。
+// 純米＝被ダメ×0.95・糖化×0.9／本醸造系＝上槽ドロップ+1・純度🍶の上限-1（最低1）。数値の正は docs/sim_style_check.md
+const BREW = {
+  junmai:  { label: '純米',   desc: '厚みで守る。糖化はゆっくり',       dmgTaken: 0.95, glucose: 0.90, dropBonus: 0, purityCap: 0 },
+  honjozo: { label: '本醸造', desc: '軽く搾って多く獲る。純度の上限-1', dmgTaken: 1,    glucose: 1,    dropBonus: 1, purityCap: -1 },
+};
+const BREW_DEFAULT = 'honjozo'; // 新しくドロップする酒米の既定
+function styleOf(r) { return r && BREW[r.style] ? r.style : null; } // null＝未指定（styleを持たない旧セーブ＝従来挙動のまま）
+function brewOf(r) { const s = styleOf(r); return s ? BREW[s] : null; }
+function brewLabel(r) { const b = brewOf(r); return b ? b.label : '未設定'; }
+function brewDesc(r) { const b = brewOf(r); return b ? b.desc : 'Bキーで純米／本醸造を選べる'; }
+function brewDmgTaken() { const b = brewOf(META.rice); return b ? b.dmgTaken : 1; }   // 敵→自分のダメージ倍率
+function brewGlucoseMul() { const b = brewOf(META.rice); return b ? b.glucose : 1; }  // 通常攻撃の糖化倍率
+function brewDropCount() { const b = brewOf(META.rice); return 1 + (b ? b.dropBonus : 0); } // 上槽のドロップ数
+function brewPurityCap() { const b = brewOf(META.rice); return b ? b.purityCap : 0; }       // 純度🍶の上限の増減
 // 純度の上限。酛「酛の粘り」はラン内だけ上限を押し上げる（METAには一切書かない）
-function playerMaxHp() { return 5 + (riceMainIs('雄町の魂') ? 1 : 0) + (G && G.moto ? (G.moto.stack.nebari || 0) * MOTO.maxHp : 0); }
+function playerMaxHp() { return Math.max(1, 5 + (riceMainIs('雄町の魂') ? 1 : 0) + (G && G.moto ? (G.moto.stack.nebari || 0) * MOTO.maxHp : 0) + brewPurityCap()); } // 本醸造系は上限-1
 
 const RARITY = [
-  { label: '並',    color: '#c8bda0', slots: [0, 0] },
-  { label: '純米',  color: '#b8d98a', slots: [1, 2] },
-  { label: '吟醸',  color: '#8ad9c8', slots: [2, 3] },
-  { label: '大吟醸', color: '#ffd76e', slots: [4, 4] }, // 原案どおり4枠確定
+  { label: '普通酒', jun: '普通酒',       color: '#c8bda0', slots: [0, 0] },
+  { label: '本醸造', jun: '特別純米',     color: '#b8d98a', slots: [1, 2] },
+  { label: '吟醸',   jun: '純米吟醸',     color: '#8ad9c8', slots: [2, 3] },
+  { label: '大吟醸', jun: '純米大吟醸',   color: '#ffd76e', slots: [4, 4] }, // 原案どおり4枠確定
 ];
+// 名前の合成＝原料軸（仕込み方）×精米歩合軸（レア度）。普通酒段階は純米でも「純米」を付けない
+function rarityLabel(r) { return r ? (styleOf(r) === 'junmai' ? RARITY[r.rarity].jun : RARITY[r.rarity].label) : ''; }
 // レア度テーブル（数値層のEASY/NORMAL/HARD/NIGHTMAREを移植。tier=進軍の深さで決まる）
 const DROP_TABLE = [
   [0.60, 0.30, 0.09, 0.01],
@@ -165,12 +184,12 @@ function rollDrop(tier, forcedName) {
   for (const k of pool.sort(() => Math.random() - 0.5).slice(0, n)) subs[k] = true;
   // 米武将を浄化した蔵は、その武将の魂が確定で宿る（先鋒は全5種からランダム）
   const name = forcedName || RICE_NAMES[Math.floor(Math.random() * RICE_NAMES.length)];
-  return { name, rarity, subs };
+  return { name, rarity, subs, style: BREW_DEFAULT };
 }
 function riceHas(key) { return !!(META.rice && META.rice.subs && META.rice.subs[key]); }
 function riceText(r) {
   if (!r) return '酒米なし';
-  return RARITY[r.rarity].label + '・' + r.name + '〈' + (RICE_MAINS[r.name] || '') + '〉' + Object.keys(r.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('');
+  return rarityLabel(r) + '・' + r.name + '〈' + (RICE_MAINS[r.name] || '') + '〉' + Object.keys(r.subs || {}).map(k => '［' + SUBS[k].desc + '］').join('');
 }
 
 // ---- 効果音（Web Audio合成・ファイルレス。Mキーでミュート）----
@@ -354,6 +373,7 @@ addEventListener('keydown', e => {
     if (e.code === 'KeyE' || e.code === 'Escape') { G.mode = G.eqBack || 'world'; G.mapT = 0; return; }
     if (e.code === 'KeyV') { equipSell(); return; }   // 蔵出し（売却）
     if (e.code === 'KeyF') { equipRework(); return; } // 加工（麹の塗り直し／サブの付け直し）
+    if (e.code === 'KeyB') { equipBrewToggle(); return; } // 仕込み方（純米／本醸造）
     if (['ArrowLeft','KeyA'].includes(e.code)) { G.eqCol = (G.eqCol + 2) % 3; G.eqIdx = 0; }
     if (['ArrowRight','KeyD'].includes(e.code)) { G.eqCol = (G.eqCol + 1) % 3; G.eqIdx = 0; }
     const len = equipCols()[G.eqCol].items.length;
@@ -380,6 +400,7 @@ const MAP_EQUIP_BTN = { x: 20, y: H - 56, w: 104, h: 38 };
 const EQUIP_BACK_BTN = { x: 20, y: 20, w: 104, h: 38 };
 const EQUIP_SELL_BTN = { x: W - 20 - 104, y: 20, w: 104, h: 38 }; // 蔵出し（売却）
 const EQUIP_REWORK_BTN = { x: W - 20 - 104, y: 64, w: 104, h: 38 }; // 加工（リロール）
+const EQUIP_STYLE_BTN = { x: W - 20 - 104, y: 108, w: 104, h: 38 }; // 仕込み方（純米／本醸造）
 // 腐造（over）画面の2つの出口：リトライとワールドマップ帰還
 const OVER_RETRY_BTN = { x: W / 2 - 200, y: H - 92, w: 180, h: 44 };
 const OVER_WORLD_BTN = { x: W / 2 + 20, y: H - 92, w: 180, h: 44 };
@@ -470,6 +491,7 @@ function equipTap(p) {
   if (inBtn(p, EQUIP_BACK_BTN)) { G.mode = G.eqBack || 'world'; G.mapT = 0; return; }
   if (inBtn(p, EQUIP_SELL_BTN)) { equipSell(); return; }     // 蔵出し
   if (inBtn(p, EQUIP_REWORK_BTN)) { equipRework(); return; } // 加工
+  if (inBtn(p, EQUIP_STYLE_BTN)) { equipBrewToggle(); return; } // 仕込み方
   const ci = p.x < W / 3 ? 0 : p.x < W * 2 / 3 ? 1 : 2;
   const i = Math.round((p.y - 152) / 26);
   const items = equipCols()[ci].items;
@@ -568,7 +590,7 @@ function updateKuraStates() {
 }
 function runLootPush(it) { G.runLoot.push(it); } // 今回の獲得を記録（精算は一括）
 function runLootText(it) {
-  if (it.type === 'rice') return RARITY[it.rarity].label + '・' + it.name;
+  if (it.type === 'rice') return rarityLabel(it) + '・' + it.name;
   if (it.type === 'weapon') return KOJI[it.koji].name + '×' + STYLE[it.style].name + 'の' + WTYPES[it.wtype].label;
   if (it.type === 'koku') return '石高+' + it.koku;
   if (it.type === 'yeast') return '新酵母：' + it.name;
@@ -950,7 +972,7 @@ function singleDmg(wt, sg, crit) {
 }
 // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
 function addGlucose(n) {
-  G.glucose = Math.min(G.glucose + n * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1) * motoGluMul(), G.glucoseMax);
+  G.glucose = Math.min(G.glucose + n * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1) * motoGluMul() * brewGlucoseMul(), G.glucoseMax);
 }
 
 function attack() {
@@ -1236,9 +1258,12 @@ function clearKura(k) {
   runLootPush({ type: 'koku', koku: kokuGain });
   if (G.player) G.player.hp = Math.min(G.player.hp + 1, playerMaxHp()); // HP+1回復（上限まで）
   // ドロップ：その場で選択せず即 bagPush（酒米はレア度保護つき）
-  const drop = rollDrop(DIFFS[G.diff].tier, k.riceBossDone ? regionRice() : null);
-  if (!META.rice) META.rice = drop; else bagPush(META.bagRice, drop, true);
-  runLootPush({ type: 'rice', rarity: drop.rarity, name: drop.name });
+  const dropN = brewDropCount(); // 本醸造系＝同じ表をもう1回引く（+1）
+  for (let i = 0; i < dropN; i++) {
+    const drop = rollDrop(DIFFS[G.diff].tier, k.riceBossDone ? regionRice() : null);
+    if (!META.rice) META.rice = drop; else bagPush(META.bagRice, drop, true);
+    runLootPush({ type: 'rice', rarity: drop.rarity, name: drop.name, style: drop.style });
+  }
   // 杜氏の極意・regionClear更新は総本山制圧時のみ（既存joso内ロジックを移植）
   if (k.node.boss) {
     if (G.diff >= 1 && META.polish === 70) { META.polish = 50; runLootPush({ type: 'gokui', name: '精米の技 70%→50%' }); }
@@ -1409,6 +1434,14 @@ function update(dt) {
         p.inv = gokuiHas('kai') ? 0.75 : 0.5;
         sfx('block');
         addText(p.x, p.y - 34, '白麹が弾いた！', '#d9e8ff', 14);
+        e.kx += -(dx / d) * 300; e.ky += -(dy / d) * 300;
+        continue;
+      }
+      // 純米：被ダメージ×0.95。1発＝純度1なので、5%で受け流す形で写す（防御計算＝白麹の後）
+      if (Math.random() >= brewDmgTaken()) {
+        p.inv = gokuiHas('kai') ? 0.75 : 0.5;
+        sfx('block');
+        addText(p.x, p.y - 34, '純米の厚み', '#b8d98a', 14);
         e.kx += -(dx / d) * 300; e.ky += -(dy / d) * 300;
         continue;
       }
@@ -2331,7 +2364,7 @@ function draw() {
     }
     cx.font = 'bold 26px serif';
     cx.fillStyle = RARITY[d.rarity].color;
-    cx.fillText((G.riceBossDone ? '浄化の証：' : 'ドロップ：') + RARITY[d.rarity].label + '・' + d.name, W / 2, H / 2 - 40);
+    cx.fillText((G.riceBossDone ? '浄化の証：' : 'ドロップ：') + rarityLabel(d) + '・' + d.name, W / 2, H / 2 - 40);
     const subKeys = Object.keys(d.subs);
     cx.font = '17px serif';
     cx.fillStyle = '#c8bda0';
@@ -2611,7 +2644,7 @@ function equipRework() {
   } else { // 酒米：サブスキルの付け直し（レア度でコスト[不可,20,50,120]・並は不可）
     const r = G.eqIdx === 0 ? META.rice : META.bagRice[G.eqIdx - 1];
     if (!r) { setEqMsg('対象がない'); return; }
-    if (r.rarity === 0) { setEqMsg('並は付け直せない'); return; }
+    if (r.rarity === 0) { setEqMsg('普通酒は付け直せない'); return; }
     const cost = [0, 20, 50, 120][r.rarity];
     if (META.koku < cost) { setEqMsg('石高が足りない（' + cost + '石必要）'); return; }
     META.koku -= cost;
@@ -2627,10 +2660,20 @@ function equipRework() {
   }
   saveMeta();
 }
+function equipBrewToggle() { // 仕込み方（純米／本醸造）の切り替え。蔵に入る時点で固定なので装備画面でのみ
+  if (G.mode !== 'equip') { return; }
+  if (G.eqCol !== 1) { setEqMsg('仕込み方は酒米だけ'); return; }
+  const r = G.eqIdx === 0 ? META.rice : META.bagRice[G.eqIdx - 1];
+  if (!r) { setEqMsg('対象がない'); return; }
+  r.style = styleOf(r) === 'junmai' ? 'honjozo' : 'junmai';
+  sfx('block');
+  setEqMsg('仕込み方：' + BREW[r.style].label);
+  saveMeta();
+}
 function itemLabel(it) {
   if ('y' in it) return YEASTS[it.y].name;
   if ('w' in it) return it.w ? wtypeOf(it.w).label + '・' + KOJI[it.w.koji].name + '×' + STYLE[it.w.style].name : '素の大刀';
-  return it.r ? RARITY[it.r.rarity].label + '・' + it.r.name : '酒米なし';
+  return it.r ? rarityLabel(it.r) + '・' + it.r.name : '酒米なし';
 }
 function itemDetail(it) {
   if (!it) return '';
@@ -2660,6 +2703,7 @@ function drawEquip() {
   };
   eqBtn(EQUIP_SELL_BTN, '蔵出し（V）');
   eqBtn(EQUIP_REWORK_BTN, '加工（F）');
+  eqBtn(EQUIP_STYLE_BTN, '仕込み方（B）');
   // 石高（ゲーム内通貨）を常時表示
   cx.textAlign = 'left';
   cx.font = 'bold 16px serif'; cx.fillStyle = '#ffd76e';
@@ -2689,10 +2733,16 @@ function drawEquip() {
   }
   // 選択中の詳細
   cx.font = '14px serif'; cx.fillStyle = '#c8bda0';
-  cx.fillText(itemDetail(cols[G.eqCol].items[G.eqIdx]), W / 2, H - 64);
+  cx.fillText(itemDetail(cols[G.eqCol].items[G.eqIdx]), W / 2, H - 84);
+  // 仕込み方（選択中の酒米のぶんだけ1行）
+  const bsel = G.eqCol === 1 ? (G.eqIdx === 0 ? META.rice : META.bagRice[G.eqIdx - 1]) : null;
+  if (bsel) {
+    cx.font = '13px serif'; cx.fillStyle = '#b8d98a';
+    cx.fillText('仕込み方：' + brewLabel(bsel) + '　' + brewDesc(bsel), W / 2, H - 62);
+  }
   cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
-  cx.fillText('←→: 欄　↑↓: 選択　Space: 装備　E: 進軍図へ戻る', W / 2, H - 38);
-  cx.fillText('V: 蔵出し　F: 加工（塗り直し/付け直し）', W / 2, H - 20);
+  cx.fillText('←→: 欄　↑↓: 選択　Space: 装備　E: 進軍図へ戻る', W / 2, H - 40);
+  cx.fillText('V: 蔵出し　F: 加工　B: 仕込み方（蔵に入ると変えられない）', W / 2, H - 22);
 }
 
 // ---- タイトル画面 ----
