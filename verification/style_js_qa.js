@@ -1,7 +1,8 @@
 // 担当: ✅ 検証係（マンガー×ファインマン）— 仕込み方JS移植（8222766）の独立検証
 // 使い方: node verification/style_js_qa.js index.html   /   node verification/style_js_qa.js moto.html
 // 見るもの: (1)旧セーブ（style無し）読み込みで例外なし (2)新規ドロップ=honjozo (3)Bトグルが equip 以外の全モードで拒否
-//          (4)update()を実走して接触ダメージ経路に受け流しが本当に効くか (5)新規プレイヤーの既定経路で純度上限がどうなるか
+//          (4)update()を実走して接触ダメージ経路に受け流しが本当に効くか (5)新規プレイヤーの既定経路で純度上限が変わらないか
+// 2026-09-06: デメリット撤去（純米の糖化-10%・本醸造系の純度上限-1）に追随。純度上限は仕込み方で動かないことを確かめる
 const fs = require('fs'), vm = require('vm');
 const file = process.argv[2] || 'index.html';
 const html = fs.readFileSync(file, 'utf8');
@@ -71,8 +72,10 @@ console.log('\n[2] 新規プレイヤーの既定経路（セーブ無し）');
   eq('rollDrop 200回の style 集合', [...styles], ['honjozo']);
   eq('rollDrop 200回すべて style キーあり', keysOk, true);
   META.rice = X.rollDrop(0, '山田錦の魂');
-  eq('最初のドロップ（山田錦・既定honjozo）を装備した直後の純度上限（従来は5）', X.playerMaxHp(), 4);
-  console.log('       【観察】既定ドロップ=honjozo なので、新規プレイヤーは最初の蔵を越えた時点で上限5→4になる（simは純度未実装のため未計測）');
+  eq('最初のドロップ（山田錦・既定honjozo）を装備した直後の純度上限（従来と同じ5）', X.playerMaxHp(), 5);
+  const capsByStyle = [undefined, 'junmai', 'honjozo'].map(st => { META.rice = { name: '山田錦の魂', rarity: 0, subs: {} }; if (st) META.rice.style = st; return X.playerMaxHp(); });
+  eq('仕込み方3通りで純度上限が動かない', capsByStyle, [5, 5, 5]);
+  console.log('       【観察】既定ドロップ=honjozo でも純度上限は5のまま（2026-09-06に本醸造系のデメリットを撤去）');
 }
 
 // ---- (3) Bトグルの拒否：equip 以外の全モード ----
@@ -149,7 +152,7 @@ console.log('\n[5] 5%受け流しの統計（1000戦×被弾機会10〜20発、s
   const ratio = totalTaken / totalOpp;
   console.log('       被弾期待値の比（純米/本醸造）= ' + ratio.toFixed(4) + '（理論0.95）・受け流し0発の戦闘=' + (zeroBlock / fights * 100).toFixed(1) + '%・受け流し回数の分布=' + JSON.stringify(dist));
   eq('比が0.95±0.01に入る', Math.abs(ratio - 0.95) < 0.01, true);
-  // 純度上限5で「1発の差」が出る（=死ぬか生きるか）確率：15発被弾機会・上限5の場合の到達HP分布は本題外。受け流し0発率だけ記録
+  // 純度上限は仕込み方に関わらず5。15発被弾機会での到達HP分布は本題外。受け流し0発率だけ記録
 }
 
 console.log('\n' + (fails ? '[結果] FAIL ' + fails + '件 — ' + file : '[結果] PASS — ' + file));

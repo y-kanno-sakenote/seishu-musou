@@ -1,11 +1,13 @@
 // 担当: ✅ 検証係（マンガー×ファインマン）— 仕込み方（純米／本醸造系）JS移植のスタブ実走
 // 使い方: node verification/style_js_check.js index.html
-// 見るもの: (a)未指定/honjozoで従来どおりの戦闘値 (b)純米の×0.95/×0.9 (c)本醸造系のドロップ+1・純度上限-1 (d)名前8通り
+// 見るもの: (a)未指定/honjozoで従来どおりの戦闘値 (b)純米の×0.95のみ (c)本醸造系のドロップ+1のみ・純度上限は不変 (d)名前8通り
+// 2026-09-06: デメリット（純米の糖化-10%・本醸造系の純度上限-1）を撤去。ここでは「変化しないこと」を確かめる
 const fs = require('fs'), vm = require('vm');
 const file = process.argv[2] || 'index.html';
 const html = fs.readFileSync(file, 'utf8');
 const m = html.match(/<script>([\s\S]*?)<\/script>/);
-const src = m[1] + "\n;globalThis.__X = { META, G, BREW, BREW_DEFAULT, RARITY, rarityLabel, styleOf, brewDmgTaken, brewGlucoseMul, brewDropCount, brewPurityCap, playerMaxHp, rollDrop, riceText, equipBrewToggle, bagPush, drawEquip, joso: (typeof joso === 'function' ? joso : null), clearKura: (typeof clearKura === 'function' ? clearKura : null) };";
+const src0 = m[1];
+const src = m[1] + "\n;globalThis.__X = { META, G, BREW, BREW_DEFAULT, RARITY, rarityLabel, styleOf, brewDmgTaken, brewDropCount, playerMaxHp, rollDrop, riceText, equipBrewToggle, bagPush, drawEquip, joso: (typeof joso === 'function' ? joso : null), clearKura: (typeof clearKura === 'function' ? clearKura : null) };";
 new vm.Script(src, { filename: file }); // 構文チェック
 console.log('[parse] OK', file, 'script lines=', src.split('\n').length);
 
@@ -37,7 +39,6 @@ function wear(style, name) { META.rice = rice(style, name); }
 console.log('\n[a] style未指定（旧セーブ）＝従来の値');
 wear(undefined);
 eq('被ダメ倍率', X.brewDmgTaken(), 1);
-eq('糖化倍率', X.brewGlucoseMul(), 1);
 eq('上槽ドロップ数', X.brewDropCount(), 1);
 eq('純度上限', X.playerMaxHp(), 5);
 wear(undefined, '雄町の魂');
@@ -47,26 +48,39 @@ eq('純度上限（雄町）', X.playerMaxHp(), 6);
 console.log("\n[a'] 本醸造系＝戦闘の値は従来のまま");
 wear('honjozo');
 eq('被ダメ倍率', X.brewDmgTaken(), 1);
-eq('糖化倍率', X.brewGlucoseMul(), 1);
 
-// ---- (b) 純米＝×0.95 / ×0.9。ドロップ数と純度上限は据え置き ----
-console.log('\n[b] 純米');
+// ---- (b) 純米＝×0.95 のみ。糖化・ドロップ数・純度上限は据え置き ----
+console.log('\n[b] 純米（メリットのみ）');
 wear('junmai');
 eq('被ダメ倍率', X.brewDmgTaken(), 0.95);
-eq('糖化倍率', X.brewGlucoseMul(), 0.9);
 eq('上槽ドロップ数', X.brewDropCount(), 1);
 eq('純度上限', X.playerMaxHp(), 5);
 wear('junmai', '雄町の魂');
 eq('純度上限（雄町）', X.playerMaxHp(), 6);
 
-// ---- (c) 本醸造系＝ドロップ+1・純度上限-1（最低1） ----
-console.log('\n[c] 本醸造系');
+// ---- (c) 本醸造系＝ドロップ+1 のみ。純度上限は減らさない ----
+console.log('\n[c] 本醸造系（メリットのみ）');
 wear('honjozo');
 eq('上槽ドロップ数', X.brewDropCount(), 2);
-eq('純度上限', X.playerMaxHp(), 4);
+eq('純度上限（未指定と同じ）', X.playerMaxHp(), 5);
 wear('honjozo', '雄町の魂');
-eq('純度上限（雄町）', X.playerMaxHp(), 5);
-eq('上限は0にしない（最低1）', Math.max(1, 1 - 1), 1);
+eq('純度上限（雄町・未指定と同じ）', X.playerMaxHp(), 6);
+
+// ---- (c') デメリットが本当に消えているか：BREWの持ち物と、糖化倍率・純度上限が仕込み方で動かないこと ----
+console.log("\n[c'] デメリット撤去の確認（2026-09-06）");
+eq('BREW.junmai のキー', Object.keys(X.BREW.junmai).sort(), ['desc', 'dmgTaken', 'dropBonus', 'label']);
+eq('BREW.honjozo のキー', Object.keys(X.BREW.honjozo).sort(), ['desc', 'dmgTaken', 'dropBonus', 'label']);
+eq('brewGlucoseMul は存在しない', typeof ctx.brewGlucoseMul, 'undefined');
+eq('brewPurityCap は存在しない', typeof ctx.brewPurityCap, 'undefined');
+eq('糖化の式に仕込み方が入らない', /brewGlucoseMul/.test(src0), false);
+{
+  const caps = [];
+  for (const st of [undefined, 'junmai', 'honjozo']) { wear(st); caps.push(X.playerMaxHp()); }
+  eq('純度上限は3通りとも同じ', caps, [5, 5, 5]);
+  const capsO = [];
+  for (const st of [undefined, 'junmai', 'honjozo']) { wear(st, '雄町の魂'); capsO.push(X.playerMaxHp()); }
+  eq('純度上限（雄町）も3通りとも同じ', capsO, [6, 6, 6]);
+}
 
 // ---- 新しいドロップの既定は本醸造系。style以外はrollDropの出力が変わらない ----
 console.log('\n[既定] 新規ドロップの仕込み方');

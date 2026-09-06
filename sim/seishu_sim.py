@@ -50,17 +50,15 @@ class Rarity(Enum):
 class BrewStyle(Enum):
     """仕込み方＝原料軸。レア度（精米歩合の一軸）とは直交する別軸。
     純米＝米・米こうじ・水のみ / 本醸造系＝醸造アルコールを白米重量の10%以下で添加
-    （清酒の製法品質表示基準・国税庁告示第8号）。格は横並びで、どちらにも利と害を置く。
+    （清酒の製法品質表示基準・国税庁告示第8号）。格は横並びで、どちらにもメリットだけを置く（デメリットは持たせない）。
     None（未指定）＝2026-09-06以前の挙動（効果なし・従来の名前）＝後方互換。"""
-    JUNMAI = auto()   # 純米: 被ダメ-5% / 糖化-10%
-    HONJOZO = auto()  # 本醸造系: 上槽ドロップ数+1 / 純度上限-1（simは純度を持たないため未実装・注記のみ）
+    JUNMAI = auto()   # 純米: 被ダメ-5%
+    HONJOZO = auto()  # 本醸造系: 上槽ドロップ数+1
 
 
-# 仕込み方の効果（2026-09-06 叩き台）
+# 仕込み方の効果（2026-09-06 メリットのみ版）
 JUNMAI_DMG_TAKEN = 0.95    # 純米: 被ダメ-5%（コク＝厚みの写像）※叩き台は-10%。実測で-5%に下げた（docs/sim_style_check.md）
-JUNMAI_GLUCOSE = 0.90      # 純米: 糖化-10%
 HONJOZO_DROP_BONUS = 1     # 本醸造系: 上槽ドロップ数+1（アル添で粕歩合が下がる写像）
-HONJOZO_PURITY_CAP = -1    # 本醸造系: 純度🍶の上限-1 ※simは純度を持たないため未実装（手触り層で実装する）
 
 
 # サブスキル（2026-07-19に4種へ拡張。原案テーブル完備）
@@ -165,10 +163,9 @@ def simulate_battle(weapon: Weapon, rice: Rice, yeast: Yeast, tn: Tuning, rng: r
     sweep = int(tn.sweep_targets * (1.5 if weapon.style == Style.BOX else 1.0))
     yeast_mult = 1.30 if rice.has("YEAST_DAMAGE_UP") else 1.0
     boss_mult = 1.50 if rice.has("VS_BOSS_DAMAGE_UP") else 1.0  # 火入れの極意：ボス・火落ち菌のみ
-    # 仕込み方（純米=被ダメ-5%・糖化-10% / 本醸造系=戦闘中の効果なし。利は上槽ドロップ数+1）
-    style_glucose = JUNMAI_GLUCOSE if rice.style == BrewStyle.JUNMAI else 1.0
+    # 仕込み方（純米=被ダメ-5% / 本醸造系=戦闘中の効果なし。利は上槽ドロップ数+1）
     style_dmg_taken = JUNMAI_DMG_TAKEN if rice.style == BrewStyle.JUNMAI else 1.0
-    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0) * style_glucose
+    glucose_rate = tn.glucose_rate * (1.15 if rice.has("GLUCOSE_BOOST") else 1.0) * (1.35 if weapon.style == Style.BOX else 1.0)
     incoming_cut = 0.20 if weapon.koji == Koji.WHITE else 0.0
 
     def vs_def(dmg, df, ignore=False):
@@ -458,8 +455,6 @@ def main_style():
     for style, label in ((BrewStyle.JUNMAI, "純米"), (BrewStyle.HONJOZO, "本醸造系"), (None, "未指定")):
         names = [JosoSystem.PREFIX[style][ra] + "山田錦の魂" for ra in Rarity]
         print(f"  {label:<5} " + " / ".join(names))
-
-    print("\n※純度🍶の上限-1（本醸造系のデメリット）はsimに純度の概念が無いため未実装。手触り層で実装する")
 
 
 if __name__ == "__main__":

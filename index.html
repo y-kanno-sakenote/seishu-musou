@@ -133,10 +133,10 @@ function riceMainIs(name) { return !!(META.rice && META.rice.name === name); }
 
 // 仕込み方（純米／本醸造系）＝酒米の原料軸。レア度（精米歩合の一軸）と直交する別軸。
 // 蔵に入る時点で固定（装備画面でだけ切り替えられる。戦闘中は装備画面に入れない）。
-// 純米＝被ダメ×0.95・糖化×0.9／本醸造系＝上槽ドロップ+1・純度🍶の上限-1（最低1）。数値の正は docs/sim_style_check.md
+// どちらもメリットのみ（デメリットは持たせない）。純米＝被ダメ×0.95／本醸造系＝上槽ドロップ+1。数値の正は docs/sim_style_check.md
 const BREW = {
-  junmai:  { label: '純米',   desc: '厚みで守る。糖化はゆっくり',       dmgTaken: 0.95, glucose: 0.90, dropBonus: 0, purityCap: 0 },
-  honjozo: { label: '本醸造', desc: '上槽の酒米+1。純度上限-1', dmgTaken: 1,    glucose: 1,    dropBonus: 1, purityCap: -1 },
+  junmai:  { label: '純米',   desc: '厚みで守る',   dmgTaken: 0.95, dropBonus: 0 },
+  honjozo: { label: '本醸造', desc: '上槽の酒米+1', dmgTaken: 1,    dropBonus: 1 },
 };
 const BREW_DEFAULT = 'honjozo'; // 新しくドロップする酒米の既定
 function styleOf(r) { return r && BREW[r.style] ? r.style : null; } // null＝未指定（styleを持たない旧セーブ＝従来挙動のまま）
@@ -144,10 +144,8 @@ function brewOf(r) { const s = styleOf(r); return s ? BREW[s] : null; }
 function brewLabel(r) { const b = brewOf(r); return b ? b.label : '未設定'; }
 function brewDesc(r) { const b = brewOf(r); return b ? b.desc : 'Bキーで純米／本醸造を選べる'; }
 function brewDmgTaken() { const b = brewOf(META.rice); return b ? b.dmgTaken : 1; }   // 敵→自分のダメージ倍率
-function brewGlucoseMul() { const b = brewOf(META.rice); return b ? b.glucose : 1; }  // 通常攻撃の糖化倍率
 function brewDropCount() { const b = brewOf(META.rice); return 1 + (b ? b.dropBonus : 0); } // 上槽のドロップ数
-function brewPurityCap() { const b = brewOf(META.rice); return b ? b.purityCap : 0; }       // 純度🍶の上限の増減
-function playerMaxHp() { return Math.max(1, 5 + (riceMainIs('雄町の魂') ? 1 : 0) + brewPurityCap()); } // 本醸造系は上限-1
+function playerMaxHp() { return 5 + (riceMainIs('雄町の魂') ? 1 : 0); }
 
 const RARITY = [
   { label: '普通酒', jun: '普通酒',       color: '#c8bda0', slots: [0, 0] },
@@ -675,7 +673,7 @@ function attack() {
     sfx('hit');
     G.shake = Math.min(G.shake + 2 + hit * 0.6, 9);
     // 糖化：当てた数だけブドウ糖が溜まる（アミラーゼ活性+15%／美山錦+10%／糖化の技+10%／風土補正）
-    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1) * brewGlucoseMul(), G.glucoseMax);
+    G.glucose = Math.min(G.glucose + hit * (riceHas('amylase') ? 1.15 : 1) * (riceMainIs('美山錦の魂') ? 1.1 : 1) * (gokuiHas('tou') ? 1.1 : 1) * (gimFx().glu || 1), G.glucoseMax);
   }
 }
 
