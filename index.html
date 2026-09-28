@@ -371,11 +371,17 @@ function canvasPos(e) {
 }
 const inBtn = (p, b) => b.r ? Math.hypot(p.x - b.x, p.y - b.y) < b.r + 10 : (p.x > b.x && p.x < b.x + b.w && p.y > b.y && p.y < b.y + b.h);
 
+// 画面・パネルが切り替わった直後のタップは無視する（2回タップの2打目が次の画面に当たって誤操作になるのを防ぐ）
+const TAP_GUARD_MS = 320;
+let seenMode = null, modeAt = 0;
+function noteMode() { if (G.mode !== seenMode) { seenMode = G.mode; modeAt = performance.now(); } }
 cv.addEventListener('pointerdown', e => {
   audioInit();
   if (e.pointerType !== 'mouse') G.touchUI = true;
   const p = canvasPos(e);
   e.preventDefault();
+  noteMode();
+  if ((G.mode === 'world' || G.mode === 'diffsel' || G.mode === 'map') && performance.now() - modeAt < TAP_GUARD_MS) return;
   if (G.mode === 'title') { G.mode = 'world'; return; }
   if (G.mode === 'world') { worldTap(p); return; }
   if (G.mode === 'diffsel') { diffTap(p); return; }
@@ -1949,6 +1955,7 @@ function loop(now) {
   let dt = rawDt;
   if (G.hitstop > 0) { G.hitstop -= rawDt; dt = rawDt * 0.15; } // 必殺のヒットストップ
   update(dt);
+  noteMode();
   draw();
   requestAnimationFrame(loop);
 }
