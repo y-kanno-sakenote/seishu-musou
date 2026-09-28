@@ -265,8 +265,8 @@ function gokuiHas(k) { return Array.isArray(META.gokui) && META.gokui.includes(k
 function regionName() { return REGIONS10[G.regionIdx].name; }
 // 難易度：敵スケールとドロップテーブル（EASY〜NIGHTMARE）が直結
 const DIFFS = [
-  { name: '初仕込み', scale: 0, tier: 0, desc: '敵よわめ・ドロップ並中心' },
-  { name: '本仕込み', scale: 2, tier: 1, desc: '標準・純米中心／精米の技50%' },
+  { name: '初仕込み', scale: 0, tier: 0, desc: '敵よわめ・ドロップ普通酒中心' },
+  { name: '本仕込み', scale: 2, tier: 1, desc: '標準・本醸造中心／精米の技50%' },
   { name: '寒仕込み', scale: 5, tier: 2, desc: '敵つよめ・吟醸中心／精米の技35%' },
   { name: '鬼仕込み', scale: 9, tier: 3, desc: '過酷・大吟醸確定' },
 ];
@@ -1603,7 +1603,7 @@ function equipRework() {
     w.koji = nw.koji; w.style = nw.style;
     sfx('block');
     setEqMsg('麹の塗り直し：-' + cost + '石');
-  } else { // 酒米：サブスキルの付け直し（レア度でコスト[不可,20,50,120]・並は不可）
+  } else { // 酒米：サブスキルの付け直し（レア度でコスト[不可,20,50,120]・普通酒は不可）
     const r = G.eqIdx === 0 ? META.rice : META.bagRice[G.eqIdx - 1];
     if (!r) { setEqMsg('対象がない'); return; }
     if (r.rarity === 0) { setEqMsg('普通酒は付け直せない'); return; }
@@ -1811,9 +1811,17 @@ function drawWorld() {
     }
   }
   drawEquipUI(true);
-  cx.textAlign = 'center'; cx.textBaseline = 'bottom';
-  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
-  cx.fillText('←→↑↓で地域を選択　Spaceで難易度選択　E: 装備', W / 2, H - 8);
+  cx.textBaseline = 'bottom';
+  opsHint('←→↑↓で地域を選択　Spaceで難易度選択　E: 装備', H - 8);
+}
+// 画面下の操作案内：タッチ端末（主入力がタッチ／タッチで触った後）はキー案内の代わりに「2回タップで決定」を読める大きさで
+function isTouchDevice() {
+  return G.touchUI || (typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches);
+}
+function opsHint(keyText, y) {
+  cx.textAlign = 'center';
+  if (isTouchDevice()) { cx.font = '20px serif'; cx.fillStyle = '#9a8c72'; cx.fillText('2回タップで決定', W / 2, y); }
+  else { cx.font = '13px serif'; cx.fillStyle = '#6a5c48'; cx.fillText(keyText, W / 2, y); }
 }
 
 // ---- 難易度選択 ----
@@ -1844,8 +1852,7 @@ function drawDiffsel() {
     cx.fillText(locked ? 'この地域を寒仕込みで制圧すると解禁' : DIFFS[i].desc, W / 2 - 40, y);
     cx.textAlign = 'center';
   }
-  cx.font = '13px serif'; cx.fillStyle = '#6a5c48';
-  cx.fillText('↑↓で選択　Spaceで進軍　E/Escで戻る', W / 2, DIFF_PANEL.y + DIFF_PANEL.h - 22);
+  opsHint('↑↓で選択　Spaceで進軍　E/Escで戻る', DIFF_PANEL.y + DIFF_PANEL.h - 22);
 }
 
 // ---- 進軍マップ描画 ----
@@ -1914,10 +1921,8 @@ function drawMap() {
   cx.textAlign = 'center'; cx.textBaseline = 'middle';
   cx.font = 'bold 15px serif'; cx.fillStyle = '#c8bda0';
   cx.fillText('装備（E）', MAP_EQUIP_BTN.x + MAP_EQUIP_BTN.w / 2, MAP_EQUIP_BTN.y + MAP_EQUIP_BTN.h / 2);
-  cx.textAlign = 'center'; cx.textBaseline = 'bottom';
-  cx.font = '13px serif';
-  cx.fillStyle = '#6a5c48';
-  cx.fillText((RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍') + '　E: 装備', W / 2, H - 8);
+  cx.textBaseline = 'bottom';
+  opsHint((RANKS[G.rank].length > 1 ? '←→で蔵を選択　Spaceで進軍' : 'Spaceで進軍') + '　E: 装備', H - 8);
 }
 
 function drawRegionClear() {

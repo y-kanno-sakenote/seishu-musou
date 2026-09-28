@@ -1,0 +1,9 @@
+# GitHub Pages の配信から外すもの（ファイルは消さずリポジトリには残す）
+# 旧試作3本・数値層・設計文書・AI向け規約
+exclude:
+  - cool.html
+  - field.html
+  - rittai.html
+  - sim/
+  - docs/
+  - CLAUDE.md
