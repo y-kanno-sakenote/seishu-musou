@@ -1,5 +1,5 @@
 # GitHub Pages の配信から外すもの（ファイルは消さずリポジトリには残す）
-# 旧試作3本・数値層・設計文書・AI向け規約
+# 旧試作3本・数値層・設計文書・AI向け規約・rittai専用ライブラリ・検証スクリプト
 exclude:
   - cool.html
   - field.html
@@ -7,3 +7,5 @@ exclude:
   - sim/
   - docs/
   - CLAUDE.md
+  - vendor/
+  - verification/
